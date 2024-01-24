@@ -10,6 +10,9 @@ To install JAX, simply run the command:
 
     pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
-And to install WassersteinWormhole
+And to install WassersteinWormhole along with the rest of the requirements: 
 
     pip install WassersteinWormhole
+
+And running the Womrhole on your own set of point-clouds is as simple as:
+

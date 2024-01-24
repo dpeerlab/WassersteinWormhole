@@ -36,7 +36,7 @@ def pad_pointclouds(point_clouds, max_shape = -1):
     return(point_clouds_pad[:, :-1].astype('float32'), weight_vec[:, :-1].astype('float32'))
 
 class Wormhole():
-    
+
     def __init__(self, point_clouds, point_clouds_test = None, key = random.key(0), config = TransformerConfig):
     
         self. config = config
@@ -61,8 +61,12 @@ class Wormhole():
 
         
         self.eps_enc = config.eps_enc
-        self.lse_enc = config.lse_enc
+        self.eps_dec = config.eps_dec
 
+        self.lse_enc = config.lse_enc
+        self.lse_dec = config.lse_dec
+
+        self.coeff_dec = config.coeff_dec
         
         self.dist_func_enc = config.dist_func_enc
         if(self.dist_func_enc == 'W1'):
@@ -82,12 +86,42 @@ class Wormhole():
         if(self.dist_func_enc == 'GS'):
             self.jit_dist_enc = jax.jit(jax.vmap(GS, (0, 0, None, None), 0), static_argnums=[2,3]) 
 
+        self.dist_func_dec = config.dist_func_dec
+        if(self.dist_func_dec == 'W1'):
+            self.jit_dist_dec = jax.jit(jax.vmap(W1_grad, (0, 0, None, None), 0), static_argnums=[2,3])
+        if(self.dist_func_dec == 'W2'):
+            self.jit_dist_dec = jax.jit(jax.vmap(W2_grad, (0, 0, None, None), 0), static_argnums=[2,3])    
+        if(self.dist_func_dec == 'W2_norm'):
+            self.jit_dist_dec = jax.jit(jax.vmap(W2_norm_grad, (0, 0, None, None), 0), static_argnums=[2,3])
+        if(self.dist_func_dec == 'GW'):
+            self.jit_dist_dec = jax.jit(jax.vmap(GW_grad, (0, 0, None, None), 0), static_argnums=[2,3]) 
+        if(self.dist_func_dec == 'S1'):
+            self.jit_dist_dec = jax.jit(jax.vmap(S1, (0, 0, None, None), 0), static_argnums=[2,3])
+        if(self.dist_func_dec == 'S2'):
+            self.jit_dist_dec = jax.jit(jax.vmap(S2, (0, 0, None, None), 0), static_argnums=[2,3])    
+        if(self.dist_func_dec == 'S2_norm'):
+            self.jit_dist_dec = jax.jit(jax.vmap(S2_norm, (0, 0, None, None), 0), static_argnums=[2,3])
+        if(self.dist_func_dec == 'GS'):
+            self.jit_dist_dec = jax.jit(jax.vmap(GS, (0, 0, None, None), 0), static_argnums=[2,3]) 
+        if(self.coeff_dec < 0):
+            self.jit_dist_dec  = jax.jit(jax.vmap(Zeros, (0, 0, None, None), 0), static_argnums=[2,3]) 
+            self.coeff_dec = 0.0
+      
+
+
         self.scale = config.scale
         self.factor = config.factor
         self.point_clouds = self.scale_func(self.point_clouds) * self.factor
         if(point_clouds_test is not None):
             self.point_clouds_test = self.scale_func(self.point_clouds_test)*self.factor
-        self.model = Encoder(self.config)
+        
+      
+        self.pc_max_val = np.max(self.point_clouds[self.masks > 0])
+        self.pc_min_val = np.min(self.point_clouds[self.masks > 0])
+        self.scale_out = not np.isin(self.dist_func_dec, ['GS', 'GW'])
+        
+        self.model = Transformer(self.config, out_seq_len = self.out_seq_len, inp_dim = self.inp_dim,
+                                 scale_out = self.scale_out, min_val = self.pc_min_val, max_val = self.pc_max_val)
 
 
     def scale_func(self, point_clouds):
@@ -125,18 +159,41 @@ class Wormhole():
             print("Using Constant Scaling Value") 
             return(point_clouds/self.scale)
     
-    def encode(self, pc, masks):
-        enc = self.model.bind({'params': self.params}).Encoder(pc, masks, deterministic = True)
+    def encode(self, pc, masks, max_batch = 256):
+        if(pc.shape[0] < max_batch):
+            enc = self.model.bind({'params': self.params}).Encoder(pc, masks, deterministic = True)
+        else: # For when the GPU can't pass all point-clouds at once
+            num_split = int(pc.shape[0]/max_batch)+1
+            pc_split = np.array_split(pc, num_split)
+            mask_split = np.array_split(masks, num_split)
+            
+            enc = np.concatenate([self.model.bind({'params': self.params}).Encoder(pc_split[split_ind], mask_split[split_ind], deterministic = True) for
+                                  split_ind in range(num_split)], axis = 0)
         return enc
+    
+    def decode(self, enc, max_batch = 256):
+        if(enc.shape[0]<max_batch):
+            dec = self.model.bind({'params': self.params}).Decoder(enc, deterministic = True)
+            if(self.scale_out):
+                dec = nn.sigmoid(dec) * (self.pc_max_val - self.pc_min_val) + self.pc_min_val
+        else:
+            num_split = int(enc.shape[0]/max_batch)+1
+            enc_split = np.array_split(enc, num_split) 
+            dec = np.concatenate([self.model.bind({'params': self.params}).Decoder(enc_split[split_ind], deterministic = True) 
+                                  for split_ind in range(num_split)], axis = 0)
+            if(self.scale_out):
+                dec_split = np.array_split(dec, num_split) 
+                dec = np.concatenate([nn.sigmoid(dec_split[split_ind]) * (self.pc_max_val - self.pc_min_val) + self.pc_min_val for split_ind in range(num_split)], axis = 0)
+        return dec
     
     #@partial(jit, static_argnums=(0,4))
     def call(self, pc, masks, deterministic = False, key = random.key(0)):
-        enc = self.model.apply(self.variables, rngs = {'dropout': key}, deterministic = deterministic,
+        enc, dec = self.model.apply(self.variables, rngs = {'dropout': key}, deterministic = deterministic,
                                     inputs = pc, masks = masks)
-        return(enc)
+        return(enc, dec)
     
     #@partial(jit, static_argnums=(0,4))
-    def compute_losses(self, pc, masks, enc):
+    def compute_losses(self, pc, masks, enc, dec):
     
         
         
@@ -148,8 +205,12 @@ class Wormhole():
        
         enc_pairwise_dist = jnp.mean(jnp.square(enc[self.tri_u_ind[:, 0]] - enc[self.tri_u_ind[:, 1]]), axis = 1)
         
-    
-        return(pc_pairwise_dist, enc_pairwise_dist)
+        
+        pc_dec_dist = self.jit_dist_dec([pc, mask_normalized], [dec, self.pseudo_masks], 
+                                        self.eps_dec, self.lse_dec)
+        
+        # pc_dec_dist = 0
+        return(pc_pairwise_dist, enc_pairwise_dist, pc_dec_dist)
        
     
     def create_train_state(self, key = random.key(0), init_lr = 0.0001, decay_steps = 2000):
@@ -170,12 +231,13 @@ class Wormhole():
         """Train for a single step."""
         
         def loss_fn(params):
-            enc = state.apply_fn({'params':params}, inputs = pc, masks = masks, deterministic = False, rngs = {'dropout': key})
-            pc_pairwise_dist, enc_pairwise_dist = self.compute_losses(pc, masks, enc)
+            enc, dec = state.apply_fn({'params':params}, inputs = pc, masks = masks, deterministic = False, rngs = {'dropout': key})
+            pc_pairwise_dist, enc_pairwise_dist, pc_dec_dist = self.compute_losses(pc, masks, enc, dec)
             
             enc_loss = jnp.mean(jnp.square(pc_pairwise_dist - enc_pairwise_dist))
+            dec_loss = jnp.mean(pc_dec_dist)
             enc_corr = jnp.corrcoef(enc_pairwise_dist, pc_pairwise_dist)[0,1]
-            return(enc_loss, [enc_loss, enc_corr])
+            return(enc_loss + self.coeff_dec * dec_loss, [enc_loss, dec_loss, enc_corr])
     
         grad_fn = jax.value_and_grad(loss_fn, has_aux = True)
         loss, grads = grad_fn(state.params)
@@ -184,11 +246,12 @@ class Wormhole():
     
     @partial(jit, static_argnums=(0, ))
     def compute_metrics(self, state, pc, masks, key = random.key(0)):
-        enc  = state.apply_fn({'params': state.params}, inputs = pc, masks = masks, deterministic = False, rngs = {'dropout': key})
+        enc, dec  = state.apply_fn({'params': state.params}, inputs = pc, masks = masks, deterministic = False, rngs = {'dropout': key})
         pc_pairwise_dist, enc_pairwise_dist, pc_dec_dist = self.compute_losses(pc, masks, enc, dec)
         
         enc_loss = jnp.mean(jnp.square(pc_pairwise_dist - enc_pairwise_dist))
         dec_loss = jnp.mean(pc_dec_dist)
+        enc_corr = jnp.corrcoef(enc_pairwise_dist, pc_pairwise_dist)[0,1]
         
     
         metric_updates = state.metrics.single_from_model_output(enc_loss = enc_loss, dec_loss = dec_loss, enc_corr = enc_corr)
@@ -196,7 +259,7 @@ class Wormhole():
         state = state.replace(metrics=metrics)
         return(state)
 
-    def train(self, epochs = 10000, batch_size = 32, verbose = 8, init_lr = 0.0001, decay_steps = 2000, key = random.key(0)):
+    def train(self, epochs = 10000, batch_size = 16, verbose = 8, init_lr = 0.0001, decay_steps = 2000, key = random.key(0)):
         batch_size = min(self.point_clouds.shape[0], batch_size)
         
         self.tri_u_ind = jnp.stack(jnp.triu_indices(batch_size, 1), axis =1)
@@ -209,7 +272,7 @@ class Wormhole():
 
         
         tq = trange(epochs, leave=True, desc = "")
-        enc_loss_mean, enc_corr_mean, count = 0,0,0
+        enc_loss_mean, dec_loss_mean, enc_corr_mean, count = 0,0,0,0
         for epoch in tq:
             # time.sleep(1)
             key, subkey = random.split(key)
@@ -226,18 +289,18 @@ class Wormhole():
             state, loss = self.train_step(state, point_clouds_batch, masks_batch, subkey)
             self.params = state.params
 
-            enc_loss_mean, enc_corr_mean, count = enc_loss_mean + loss[1][0], enc_corr_mean + loss[1][1], count + 1
+            enc_loss_mean, dec_loss_mean, enc_corr_mean, count = enc_loss_mean + loss[1][0], dec_loss_mean + loss[1][1], enc_corr_mean + loss[1][2], count + 1
 
             if(epoch%verbose==0):
                 print_statement = ''
-                for metric,value in zip(['enc_loss', 'enc_corr'], [enc_loss_mean, enc_corr_mean]):
+                for metric,value in zip(['enc_loss', 'dec_loss', 'enc_corr'], [enc_loss_mean, dec_loss_mean, enc_corr_mean]):
                     if(metric == 'enc_corr'):
                         print_statement = print_statement + ' ' + metric + ': {:.3f}'.format(value/count)
                     else:
                         print_statement = print_statement + ' ' + metric + ': {:.3e}'.format(value/count)
 
                 # state.replace(metrics=state.metrics.empty())
-                enc_loss_mean, enc_corr_mean, count = 0,0,0
+                enc_loss_mean, dec_loss_mean, enc_corr_mean, count = 0,0,0,0
                 tq.set_description(print_statement)
                 tq.refresh() # to show immediately the update
 
