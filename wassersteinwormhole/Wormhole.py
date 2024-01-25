@@ -12,8 +12,8 @@ import scipy.stats
 import numpy as np
 from tqdm import trange
 
-from WassersteinWormhole.utils_Transformer import * 
-from WassersteinWormhole.utils_OT import * 
+from wassersteinwormhole.utils_Transformer import * 
+from wassersteinwormhole.utils_OT import * 
 
 
 
