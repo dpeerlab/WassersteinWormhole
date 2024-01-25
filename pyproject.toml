@@ -1,18 +1,19 @@
-[project]
-name = "WassersteinWormhole"
+[tool.poetry]
+name = "wassersteinwormhole"
 version = "0.1.0"
-description = "Efficient and scalable image registration (alignment) for multiplexed imaging data"
-authors = [
-    { name = "Doron Haviv", email = "havivd@mskcc.org"},
-]
-maintainers = [
-    { name = "Tobias Krause", email = "krauset@mskcc.org" },
-]
-license = {text = "MIT"}
-requires-python = ">=3.9"
-dependencies = [
-    "flax==0.7.5",
-    "ott-jax==0.4.4",
-    "clu==0.0.10",
-    "tqdm"
-]
+description = "Transformer based embeddings for Wasserstein Distances"
+authors = ["Doron Haviv"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+flax = "0.7.5"
+ott-jax = "0.4.4"
+clu = "0.0.10"
+tqdm = "^4.66.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
