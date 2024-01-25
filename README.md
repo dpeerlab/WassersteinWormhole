@@ -16,6 +16,7 @@ And to install WassersteinWormhole along with the rest of the requirements:
 
 And running the Womrhole on your own set of point-clouds is as simple as:
     
+    from WassersteinWormhole import Wormhole 
     WormholeModel = Wormhole(point_clouds = point_clouds)
     WormholeModel.train()
     Embeddings = WormholeModel.encode(WormholeModel.point_clouds, WormholeModel.masks)
