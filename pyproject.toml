@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "wassersteinwormhole"
-version = "0.1.7"
+version = "0.1.0"
 description = "Transformer based embeddings for Wasserstein Distances"
-authors = ["Doron Haviv"]
+authors = ["Anon"]
 license = "MIT"
 readme = "README.md"
 
