@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "wassersteinwormhole"
-version = "0.1.0"
+version = "0.2.2"
 description = "Transformer based embeddings for Wasserstein Distances"
 authors = ["Anon"]
 license = "MIT"
@@ -12,7 +12,6 @@ flax = "0.7.5"
 ott-jax = "0.4.4"
 clu = "0.0.10"
 tqdm = "^4.66.1"
-
 
 [build-system]
 requires = ["poetry-core"]
