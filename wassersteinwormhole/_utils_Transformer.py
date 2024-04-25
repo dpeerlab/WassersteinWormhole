@@ -15,42 +15,20 @@ import numpy as np
 
 from typing import Callable, Any, Optional
 
+from wassersteinwormhole._utils_WeightedAttention import WeightedMultiheadAttention
+from wassersteinwormhole.DefaultConfig import DefaultConfig
 
-@struct.dataclass
-class TransformerConfig:
-    """Global hyperparameters used to minimize obnoxious kwarg plumbing."""
-    vocab_size: int
-    output_vocab_size: int
-    dtype: Any = jnp.float32
-    dist_func_enc: str = 'S2'
-    dist_func_dec: str = 'S2'
-    eps_enc: float = 0.1
-    eps_dec: float = 0.01
-    lse_enc: bool = False
-    lse_dec: bool = True
-    coeff_dec: float = 1
-    scale: str = 'min_max_total'
-    factor: float = 1.0
-    emb_dim: int = 128
-    num_heads: int = 4
-    num_layers: int = 3
-    qkv_dim: int = 128
-    mlp_dim: int = 512
-    max_len: int = 256
-    attention_dropout_rate: float = 0.1
-    kernel_init: Callable = nn.initializers.glorot_uniform()
-    bias_init: Callable = nn.initializers.zeros_init()
 
-    
+
 class Embedding(nn.Module):
     """Transformer embedding block.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     out_dim: optionally specify out dimension.
     """
 
-    config: TransformerConfig
+    config: DefaultConfig
 
     @nn.compact
     def __call__(self, inputs):
@@ -67,11 +45,11 @@ class Unembedding(nn.Module):
     """Transformer embedding block.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     out_dim: optionally specify out dimension.
     """
 
-    config: TransformerConfig
+    config: DefaultConfig
     inp_dim: int
 
     @nn.compact
@@ -89,11 +67,11 @@ class Multiplyer(nn.Module):
     """Encoding multiplyer block.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     out_dim: optionally specify out dimension.
     """
 
-    config: TransformerConfig
+    config: DefaultConfig
     out_seq_len: int
 
     @nn.compact
@@ -111,11 +89,11 @@ class FeedForward(nn.Module):
     """Transformer MLP / feed-forward block.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     out_dim: optionally specify out dimension.
     """
 
-    config: TransformerConfig
+    config: DefaultConfig
 
     @nn.compact
     def __call__(self, inputs):
@@ -127,116 +105,107 @@ class FeedForward(nn.Module):
             bias_init=config.bias_init,
         )(inputs)
         x = nn.relu(x)
-        x = nn.Dense(
+        output = nn.Dense(
             inputs.shape[-1],
             dtype=config.dtype,
             kernel_init=config.kernel_init,
             bias_init=config.bias_init,
         )(x) + inputs
-        output = nn.LayerNorm(dtype=config.dtype)(x)
         return output
+
 
     
 class EncoderBlock(nn.Module):
     """Transformer encoder layer.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     """
 
-    config: TransformerConfig
-
+    config: DefaultConfig
+    scale_weights: Optional[float] = 1
+    
     @nn.compact
-    def __call__(self, inputs, masks, deterministic):
+    def __call__(self, inputs, weights, deterministic, dropout_rng):
+        
         config = self.config
-
+        scale_weights = self.scale_weights
         # Attention block.
-        # x = nn.LayerNorm(dtype=config.dtype)(inputs)
-        x = nn.MultiHeadDotProductAttention(
-            num_heads=config.num_heads,
-            dtype=config.dtype,
-            qkv_features=config.qkv_dim,
-            kernel_init=config.kernel_init,
-            bias_init=config.bias_init,
-            use_bias=False,
-            broadcast_dropout=False,
-            dropout_rate=config.attention_dropout_rate,
-            deterministic=deterministic,
-        )(inputs, mask = masks[:, None, None, :]) + inputs
+   
+        x = WeightedMultiheadAttention(config, scale_weights)(x = inputs, 
+                                                             weights = weights, 
+                                                             deterministic = deterministic, 
+                                                             dropout_rng = dropout_rng) + inputs
 
-        #x = nn.Dropout(rate=config.attention_dropout_rate)(x, deterministic=deterministic)
-        x = x + inputs
         x = nn.LayerNorm(dtype=config.dtype)(x)
-        output = FeedForward(config=config)(x)
+        x = FeedForward(config=config)(x)
+        output = nn.LayerNorm(dtype=config.dtype)(x)
         return output
 
 class DecoderBlock(nn.Module):
     """Transformer decoder layer.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     """
 
-    config: TransformerConfig
+    config: DefaultConfig
 
     @nn.compact
-    def __call__(self, inputs, deterministic):
+    def __call__(self, inputs, deterministic, dropout_rng):
         config = self.config
 
         # Attention block.
-        x = nn.MultiHeadDotProductAttention(
-            num_heads=config.num_heads,
-            dtype=config.dtype,
-            qkv_features=config.qkv_dim,
-            kernel_init=config.kernel_init,
-            bias_init=config.bias_init,
-            use_bias=False,
-            broadcast_dropout=False,
-            dropout_rate=config.attention_dropout_rate,
-            deterministic=deterministic,
-        )(inputs) + inputs
+        x = WeightedMultiheadAttention(config)(x = inputs, 
+                                               deterministic = deterministic, 
+                                               dropout_rng = dropout_rng) + inputs
 
+        #x = nn.Dropout(rate=config.attention_dropout_rate)(x, deterministic=deterministic)
         x = nn.LayerNorm(dtype=config.dtype)(x)
-        output = FeedForward(config=config)(x)
-        
+        x = FeedForward(config=config)(x)
+        output = nn.LayerNorm(dtype=config.dtype)(x)
         return output
 
     
-class Encoder(nn.Module):
+class EncoderModel(nn.Module):
     """Transformer encoder network.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     """
-    config: TransformerConfig
+    config: DefaultConfig
+    scale_weights: Optional[float] = 1
     
     @nn.compact
-    def __call__(self, inputs, masks, deterministic):
+    def __call__(self, inputs, weights, deterministic, dropout_rng = random.key(0)):
 
         config = self.config
-
+        scale_weights = self.scale_weights
+        
         x = inputs#.astype('int32')
         x = Embedding(config)(x)
 
         for _ in range(config.num_layers):
-            x = EncoderBlock(config)(x, masks = masks, deterministic=deterministic)
-
-        x = jnp.sum(x * masks[:, :, None], axis = 1)/jnp.sum(masks, axis = 1, keepdims = True)
+            x = EncoderBlock(config, scale_weights)(inputs = x, 
+                                                    weights = weights, 
+                                                    deterministic = deterministic, 
+                                                    dropout_rng = dropout_rng)
+        x = jnp.sum(x * weights[:, :, None], axis = 1)/jnp.sum(weights, axis = 1, keepdims = True)
         output = FeedForward(config)(x)
         return output
 
-class Decoder(nn.Module):
+class DecoderModel(nn.Module):
     """Transformer decoder network.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     """
-    config: TransformerConfig
+    config: DefaultConfig
     out_seq_len: int
     imp_dim: int
     
     @nn.compact
-    def __call__(self, inputs, deterministic):
+    def __call__(self, inputs, deterministic, dropout_rng = random.key(0)):
 
         config = self.config
 
@@ -244,7 +213,9 @@ class Decoder(nn.Module):
         x = Multiplyer(config, self.out_seq_len)(x)
 
         for _ in range(config.num_layers):
-            x = DecoderBlock(config)(x, deterministic=deterministic)
+            x = DecoderBlock(config)(inputs = x, 
+                                    deterministic = deterministic, 
+                                    dropout_rng = dropout_rng)
         x = FeedForward(config)(x)
         output = Unembedding(config, self.imp_dim)(x)
         return output
@@ -253,12 +224,13 @@ class Transformer(nn.Module):
     """Transformer autoencoder model.
 
     Attributes:
-    config: TransformerConfig dataclass containing hyperparameters.
+    config: DefaultConfig dataclass containing hyperparameters.
     """
     
-    config: TransformerConfig
+    config: DefaultConfig
     out_seq_len: int
     inp_dim : int
+    scale_weights: Optional[float] = 1
     scale_out: Optional[bool] = True
     min_val: Optional[Any] = -1
     max_val: Optional[Any] = 1
@@ -267,14 +239,15 @@ class Transformer(nn.Module):
         config = self.config
         out_seq_len = self.out_seq_len
         inp_dim = self.inp_dim
+        scale_weights = self.scale_weights
         scale_out = self.scale_out
         min_val = self.min_val
         max_val = self.max_val
         
-        self.Encoder = Encoder(config)#(inputs, masks, deterministic=deterministic)
-        self.Decoder = Decoder(config, out_seq_len, inp_dim)#(enc, deterministic=deterministic)
+        self.Encoder = EncoderModel(config, scale_weights)#(inputs, weights, deterministic=deterministic)
+        self.Decoder = DecoderModel(config, out_seq_len, inp_dim)#(enc, deterministic=deterministic)
     
-    def __call__(self, inputs, masks, deterministic):
+    def __call__(self, inputs, weights, deterministic = True, dropout_rng = random.key(0)):
         config = self.config
         out_seq_len = self.out_seq_len
         inp_dim = self.inp_dim
@@ -282,8 +255,16 @@ class Transformer(nn.Module):
         min_val = self.min_val
         max_val = self.max_val
         
-        enc = self.Encoder(inputs, masks, deterministic=deterministic)
-        dec = self.Decoder(enc, deterministic=deterministic)
+
+        
+        enc = self.Encoder(inputs = inputs, 
+                            weights = weights, 
+                            deterministic = deterministic, 
+                            dropout_rng = dropout_rng)
+        
+        dec = self.Decoder(inputs = enc, 
+                            deterministic = deterministic, 
+                            dropout_rng = dropout_rng)
         
         if(scale_out):
             dec = nn.sigmoid(dec) * (max_val - min_val) + min_val        
