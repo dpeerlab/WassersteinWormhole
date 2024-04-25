@@ -21,4 +21,4 @@ And running the Womrhole on your own set of point-clouds is as simple as:
     WormholeModel.train()
     Embeddings = WormholeModel.encode(WormholeModel.point_clouds, WormholeModel.masks)
  
-For more details, follow tutorial at https://wasserstienwormhole.readthedocs.io.
+For more details, follow tutorial at [https://wasserstienwormhole.readthedocs.io.](https://wassersteinwormhole.readthedocs.io/en/latest/)
