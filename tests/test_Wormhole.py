@@ -8,8 +8,8 @@ from wassersteinwormhole import Wormhole
 @pytest.fixture
 def WormholeModel():
     
-    point_cloud_sizes_train = np.random.randint(low = 10, high = 20, size = 64)
-    point_cloud_sizes_test = np.random.randint(low = 10, high = 20, size = 32)
+    point_cloud_sizes_train = np.random.randint(low = 8, high = 16, size = 64)
+    point_cloud_sizes_test = np.random.randint(low = 8, high = 16, size = 32)
     
     pc_train = [np.random.normal(size = [n, 2]) for n in point_cloud_sizes_train]
     pc_test = [np.random.normal(size = [n, 2]) for n in point_cloud_sizes_test]
