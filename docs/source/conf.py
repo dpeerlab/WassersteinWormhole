@@ -8,7 +8,8 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.abspath('../'))
+sys.path.insert(0, os.path.abspath('../../'))
+
 
 project = 'wassersteinwormhole'
 copyright = '2024, Doron Haviv'
@@ -24,6 +25,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx_mdinclude",
 ]
+
 if os.environ.get('READTHEDOCS') == 'True':
     extensions.append("sphinx_github_style")
 
