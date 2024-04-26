@@ -2,7 +2,7 @@ from flax import struct
 from flax import linen as nn
 import jax.numpy as jnp
 
-from typing import Callable, Any, Optional
+from typing import Callable, Any
 
 @struct.dataclass
 class DefaultConfig:

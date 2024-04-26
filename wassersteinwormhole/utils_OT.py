@@ -1,21 +1,13 @@
-import numpy as np
 
 
 import jax.numpy as jnp
-from jax import grad, jit, vmap
-from jax import random
-import jax
 
 import ott
-from ott import problems
-from ott.geometry import geometry, pointcloud, epsilon_scheduler
-from ott.solvers import linear, quadratic
-from ott.solvers.linear import acceleration, sinkhorn
-from ott.problems.linear import linear_problem
-from ott.tools.sinkhorn_divergence import sinkhorn_divergence
+from ott.geometry import pointcloud
+from ott.solvers import linear
 
 from ott.problems.quadratic import quadratic_problem
-from ott.solvers.quadratic import gromov_wasserstein, gromov_wasserstein_lr
+from ott.solvers.quadratic import gromov_wasserstein
 
 def W1(x, y, eps, lse_mode = False):
                     

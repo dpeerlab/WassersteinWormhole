@@ -1,23 +1,14 @@
-import optax
+from typing import Any, Optional
+
+import jax.numpy as jnp
+from clu import metrics
 from flax import linen as nn
 from flax import struct
-from flax.training import train_state 
-from clu import metrics
-
-import jax
-import jax.numpy as jnp
+from flax.training import train_state
 from jax import random
-
-
-from functools import partial
-import scipy.stats
-import numpy as np
-
-from typing import Callable, Any, Optional
 
 from wassersteinwormhole._utils_WeightedAttention import WeightedMultiheadAttention
 from wassersteinwormhole.DefaultConfig import DefaultConfig
-
 
 
 class Embedding(nn.Module):
@@ -240,17 +231,11 @@ class Transformer(nn.Module):
         out_seq_len = self.out_seq_len
         inp_dim = self.inp_dim
         scale_weights = self.scale_weights
-        scale_out = self.scale_out
-        min_val = self.min_val
-        max_val = self.max_val
         
         self.Encoder = EncoderModel(config, scale_weights)#(inputs, weights, deterministic=deterministic)
         self.Decoder = DecoderModel(config, out_seq_len, inp_dim)#(enc, deterministic=deterministic)
     
     def __call__(self, inputs, weights, deterministic = True, dropout_rng = random.key(0)):
-        config = self.config
-        out_seq_len = self.out_seq_len
-        inp_dim = self.inp_dim
         scale_out = self.scale_out
         min_val = self.min_val
         max_val = self.max_val
@@ -274,10 +259,10 @@ class Transformer(nn.Module):
     
 @struct.dataclass
 class Metrics(metrics.Collection):
-    enc_loss: metrics.Average.from_output('enc_loss')
-    dec_loss: metrics.Average.from_output('dec_loss')
-    enc_corr: metrics.Average.from_output('enc_corr')
-    
+    enc_loss: metrics.Average
+    dec_loss: metrics.Average
+    enc_corr: metrics.Average
+
 class TrainState(train_state.TrainState):
     metrics: Metrics
 

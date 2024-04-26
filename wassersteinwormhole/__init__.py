@@ -1,1 +1,1 @@
-from .Wormhole import Wormhole
+from .Wormhole import Wormhole  # noqa: F401

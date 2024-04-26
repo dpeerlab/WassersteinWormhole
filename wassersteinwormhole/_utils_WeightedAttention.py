@@ -1,38 +1,25 @@
-import math
 
-from flax import linen as nn
-from flax import struct
-from flax.training import train_state 
-from clu import metrics
+from typing import Optional
 
-import jax
 import jax.numpy as jnp
-
+from flax import linen as nn
 from jax import random
-
-import math
-
-from functools import partial
-import scipy.stats
-import numpy as np
-
-from typing import Callable, Any, Optional 
-
 from jax.typing import ArrayLike
 
 from wassersteinwormhole.DefaultConfig import DefaultConfig
 
+
 def scaled_dot_product(q,
                        k,
                        v,
-                       weights: Optional = None, 
+                       weights: Optional[ArrayLike] = None, 
                        scale_weights: float = 1,
                        deterministic: bool = False,
-                       dropout_rng: Optional = random.key(0),
+                       dropout_rng: Optional[ArrayLike] = random.key(0),
                        dropout_rate: float = 0.0,
                        ):
     
-    dtype, d_k, seq_len = q.dtype, q.shape[-1], q.shape[-2]
+    dtype, d_k = q.dtype, q.shape[-1], 
     
     attn_logits = jnp.matmul(q, jnp.swapaxes(k, -2, -1))
     attn_logits = attn_logits / jnp.sqrt(d_k)
@@ -81,9 +68,9 @@ class WeightedMultiheadAttention(nn.Module):
         
     def __call__(self, 
                  x,
-                 weights: Optional = None, 
-                 deterministic: Optional = True, 
-                 dropout_rng: Optional = random.key(0)):
+                 weights: Optional[ArrayLike] = None, 
+                 deterministic: Optional[bool] = True, 
+                 dropout_rng: Optional[ArrayLike] = random.key(0)):
         
         config = self.config
         scale_weights = self.scale_weights
