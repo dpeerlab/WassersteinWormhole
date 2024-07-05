@@ -1,13 +1,11 @@
 
 
-import jax.numpy as jnp
-
 import ott
 from ott.geometry import pointcloud
-from ott.solvers import linear
-
 from ott.problems.quadratic import quadratic_problem
+from ott.solvers import linear
 from ott.solvers.quadratic import gromov_wasserstein
+
 
 def W1(x, y, eps, lse_mode = False):
                     
@@ -163,10 +161,10 @@ def GW(x, y, eps, lse_mode = False):
 
     x,a = x[0], x[1]
     y,b = y[0], y[1]
-    geom_xx = pointcloud.PointCloud(x=x, y=x).set_scale_cost('max_cost')
-    geom_yy = pointcloud.PointCloud(x=y, y=y).set_scale_cost('max_cost')
+    geom_xx = pointcloud.PointCloud(x=x, y=x)#.set_scale_cost('max_cost')
+    geom_yy = pointcloud.PointCloud(x=y, y=y)#.set_scale_cost('max_cost')
     
-    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 100)
+    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 20)
     prob = quadratic_problem.QuadraticProblem(geom_xx, geom_yy, a = a, b = b)
     ot_solve = solver(prob)
     
@@ -190,25 +188,56 @@ def GS(x, y, eps, lse_mode = False):
     x,a = x[0], x[1]
     y,b = y[0], y[1]
     
-    geom_xx = pointcloud.PointCloud(x=x, y=x).set_scale_cost('max_cost')
-    geom_yy = pointcloud.PointCloud(x=y, y=y).set_scale_cost('max_cost')
-    
-    
-    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 100, lse_mode = lse_mode)
+    geom_xx = pointcloud.PointCloud(x=x, y=x)
+    geom_yy = pointcloud.PointCloud(x=y, y=y)
+        
+    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 20, lse_mode = lse_mode)
     prob_xy = quadratic_problem.QuadraticProblem(geom_xx, geom_yy, a = a, b = b)
     ot_solve_xy = solver(prob_xy)
     
-    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 100, lse_mode = lse_mode)
+    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 20, lse_mode = lse_mode)
     prob_xx = quadratic_problem.QuadraticProblem(geom_xx, geom_xx, a = a, b = a)
     ot_solve_xx = solver(prob_xx)
      
-    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 100, lse_mode = lse_mode)
+    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 20, lse_mode = lse_mode)
     prob_yy = quadratic_problem.QuadraticProblem(geom_yy, geom_yy, a = b, b = b)
     ot_solve_yy = solver(prob_yy)
     
     return(ot_solve_xy.reg_gw_cost - 0.5 * ot_solve_xx.reg_gw_cost - 0.5 * ot_solve_yy.reg_gw_cost)
 
+def GS_scale(x, y, eps, lse_mode = False):
+                                    
+    """
+    Calculate Gromov-Wasserstein based Sinkhorn Divergence (GS) distance between two weighted point clouds
 
+
+    :param x: (list) list with two elements, the first (x[0]) being the point-cloud coordinates and the second (x[1]) being each points weight)
+    :param y: (list) list with two elements, the first (y[0]) being the point-cloud coordinates and the second (y[1]) being each points weight)
+    :param eps: (float) coefficient of entropic regularization
+    :param lse_mode: (bool) whether to use log-sum-exp mode (if True, more stable for smaller eps, but slower) or kernel mode (default False)
+    
+    :return GS: Gromov-Wasserstein Sinkhorn Divergence between x and y 
+    """ 
+
+    x,a = x[0], x[1]
+    y,b = y[0], y[1]
+    
+    geom_xx = pointcloud.PointCloud(x=x, y=x)
+    geom_yy = pointcloud.PointCloud(x=y, y=y).set_scale_cost('max_cost')
+        
+    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 20, lse_mode = lse_mode)
+    prob_xy = quadratic_problem.QuadraticProblem(geom_xx, geom_yy, a = a, b = b)
+    ot_solve_xy = solver(prob_xy)
+    
+    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 20, lse_mode = lse_mode)
+    prob_xx = quadratic_problem.QuadraticProblem(geom_xx, geom_xx, a = a, b = a)
+    ot_solve_xx = solver(prob_xx)
+     
+    solver = gromov_wasserstein.GromovWasserstein(epsilon=eps, max_iterations = 20, lse_mode = lse_mode)
+    prob_yy = quadratic_problem.QuadraticProblem(geom_yy, geom_yy, a = b, b = b)
+    ot_solve_yy = solver(prob_yy)
+    
+    return(ot_solve_xy.reg_gw_cost - 0.5 * ot_solve_xx.reg_gw_cost - 0.5 * ot_solve_yy.reg_gw_cost)
 
 def Zeros(x, y, eps, lse_mode = False):
     
@@ -224,4 +253,4 @@ def Zeros(x, y, eps, lse_mode = False):
     :return zeros: array of zeros
     """ 
     
-    return(jnp.zeros([x[0].shape[0]]))
+    return(0)

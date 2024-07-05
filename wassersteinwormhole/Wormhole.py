@@ -1,19 +1,19 @@
 from functools import partial
 
-import jax
-import jax.numpy as jnp
-import jax.scipy as jsp
-import numpy as np
-import optax
+import jax # type: ignore
+import jax.numpy as jnp # type: ignore
+import jax.scipy as jsp # type: ignore
+import numpy as np 
+import optax # type: ignore
 import scipy.stats
-from flax import linen as nn
-from jax import jit, random
+from flax import linen as nn # type: ignore
+from jax import jit, random# type: ignore
 from tqdm import trange
+
 
 import wassersteinwormhole.utils_OT as utils_OT
 from wassersteinwormhole._utils_Transformer import Metrics, TrainState, Transformer
 from wassersteinwormhole.DefaultConfig import DefaultConfig
-
 
 
 def MaxMinScale(arr):
@@ -39,6 +39,8 @@ def pad_pointclouds(point_clouds, weights, max_shape=-1):
         max_shape = np.max([pc.shape[0] for pc in point_clouds]) + 1
     else:
         max_shape = max_shape + 1
+
+
     weights_pad = np.asarray(
         [
             np.concatenate((weight, np.zeros(max_shape - pc.shape[0])), axis=0)
@@ -60,6 +62,7 @@ def pad_pointclouds(point_clouds, weights, max_shape=-1):
         point_clouds_pad[:, :-1].astype("float32"),
         weights_pad[:, :-1].astype("float32"),
     )
+
 
 
 class Wormhole:
@@ -88,6 +91,7 @@ class Wormhole:
         self.config = config
         self.point_clouds = point_clouds
 
+        
         if weights is None:
             self.weights = [
                 np.ones(pc.shape[0]) / pc.shape[0] for pc in self.point_clouds
@@ -165,13 +169,9 @@ class Wormhole:
                 self.scale_func(self.point_clouds_test) * self.factor
             )
 
-        self.pc_max_val = np.max(
-            self.point_clouds[self.weights > 0]
-        )  # * (1 + 1 * np.isin(self.dist_func_dec, ['GS', 'GW']))
-        self.pc_min_val = np.min(
-            self.point_clouds[self.weights > 0]
-        )  # * (1 + 1 * np.isin(self.dist_func_dec, ['GS', 'GW']))
-        self.scale_out = True  # not np.isin(self.dist_func_dec, ['GS', 'GW'])
+        self.pc_max_val = np.max(self.point_clouds[self.weights > 0])
+        self.pc_min_val = np.min(self.point_clouds[self.weights > 0])
+        self.scale_out = False if np.isin(self.dist_func_enc, ["GW", "GS"]) else True
 
         self.model = Transformer(
             self.config,
@@ -190,24 +190,9 @@ class Wormhole:
 
         if self.scale == "max_dist_total":
             if not hasattr(self, "max_scale_num"):
-                max_dist = 0
-                for _ in range(10):
-                    i, j = np.random.choice(
-                        np.arange(len(self.point_clouds)), 2, replace=False
-                    )
-                    if self.dist_func_enc == "GW" or self.dist_func_enc == "GS":
-                        max_ij = np.max(
-                            scipy.spatial.distance.cdist(
-                                self.point_clouds[i], self.point_clouds[i]
-                            )
-                        )
-                    else:
-                        max_ij = np.max(
-                            scipy.spatial.distance.cdist(
-                                self.point_clouds[i], self.point_clouds[j]
-                            )
-                        )
-                    max_dist = np.maximum(max_ij, max_dist)
+                max_dist = np.max(
+                    [np.max(scipy.spatial.distance.pdist(pc)) for pc in point_clouds]
+                )
                 self.max_scale_num = max_dist
             else:
                 print("Using Calculated Max Dist Scaling Values")
@@ -369,8 +354,14 @@ class Wormhole:
             weights=self.weights[0:1],
         )["params"]
 
-        lr_sched = optax.exponential_decay(init_lr, decay_steps, 0.9, staircase=True)
-        tx = optax.adam(lr_sched)  #
+        if decay_steps < 0:
+            # tx = optax.adam(init_lr)
+            tx = optax.rmsprop(init_lr)
+        else:
+            lr_sched = optax.exponential_decay(
+                init_lr, decay_steps, 0.75, staircase=True
+            )
+            tx = optax.rmsprop(lr_sched)  #
 
         return TrainState.create(
             apply_fn=self.model.apply, params=params, tx=tx, metrics=Metrics.empty()
@@ -390,6 +381,7 @@ class Wormhole:
                 deterministic=False,
                 dropout_rng=key,
             )
+
             pc_pairwise_dist, enc_pairwise_dist, pc_dec_dist = self.compute_losses(
                 pc, weights, enc, dec
             )
@@ -397,6 +389,12 @@ class Wormhole:
             enc_loss = jnp.mean(jnp.square(pc_pairwise_dist - enc_pairwise_dist))
             dec_loss = jnp.mean(pc_dec_dist)
             enc_corr = jnp.corrcoef(enc_pairwise_dist, pc_pairwise_dist)[0, 1]
+
+            # return (
+            #      enc_loss,
+            #     [enc_loss, dec_loss, enc_corr],
+            # )
+
             return (
                 enc_loss + self.coeff_dec * dec_loss,
                 [enc_loss, dec_loss, enc_corr],
@@ -472,6 +470,9 @@ class Wormhole:
 
         tq = trange(training_steps, leave=True, desc="")
         enc_loss_mean, dec_loss_mean, enc_corr_mean, count = 0, 0, 0, 0
+
+        self.enc_loss_curve, self.dec_loss_curve = [], []
+
         for training_step in tq:
             key, subkey = random.split(key)
 
@@ -494,6 +495,9 @@ class Wormhole:
                 state, point_clouds_batch, weights_batch, subkey
             )
             self.params = state.params
+
+            self.enc_loss_curve.append(loss[1][0])
+            self.dec_loss_curve.append(loss[1][1])
 
             enc_loss_mean, dec_loss_mean, enc_corr_mean, count = (
                 enc_loss_mean + loss[1][0],
