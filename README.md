@@ -1,7 +1,7 @@
 WassersteinWormhole
 ======================
 
-Embedding point-clouds by presering Wasserstein distancse with the Wormhole.
+Embedding point-clouds by presering Wasserstein distances with the Wormhole.
 
 This implementation is written in Python3 and relies on FLAX, JAX, & JAX-OTT.
 
