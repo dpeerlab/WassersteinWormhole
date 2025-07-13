@@ -43,6 +43,9 @@ class Wormhole:
         config=None,
         **kwargs,
     ):
+        
+        if len(point_clouds) < 2:
+            raise ValueError("Wormhole requires at least two point clouds for training.")
 
         # If no config object is provided, start with the default.
         if config is None:
