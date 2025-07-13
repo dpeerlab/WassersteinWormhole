@@ -295,7 +295,7 @@ def auto_find_num_iter(point_clouds, weights, eps, lse_mode, ot_scale, ot_func, 
             try:
                 if 'W' in ot_func or 'S' in ot_func:
                     # Logic for Wasserstein, Sinkhorn, and their divergences
-                    cost_function = costs.PNormP(1) if '1' in ot_func else None
+                    cost_function = ott.geometry.costs.PNormP(1) if '1' in ot_func else None
                     geom = pointcloud.PointCloud(
                         x_points, y_points, 
                         cost_fn=cost_function, 
