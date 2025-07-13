@@ -1,8 +1,6 @@
 import pytest
 
-import anndata
 import numpy as np
-
 from wassersteinwormhole import Wormhole
 
 @pytest.fixture
