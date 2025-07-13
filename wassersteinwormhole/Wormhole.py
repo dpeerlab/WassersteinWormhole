@@ -40,8 +40,17 @@ class Wormhole:
         weights=None,
         point_clouds_test=None,
         weights_test=None,
-        config=DefaultConfig,
+        config=None,
+        **kwargs,
     ):
+
+        # If no config object is provided, start with the default.
+        if config is None:
+            config = DefaultConfig()
+
+        # Any kwargs provided will override the config settings.
+        if kwargs:
+            config = config.replace(**kwargs)
 
         self.config = config
         self.point_clouds = point_clouds
@@ -139,7 +148,7 @@ class Wormhole:
             print("Using num_sinkhorn_iter =", self.num_sinkhorn_iter)
 
         self.jit_dist_enc = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), 
-            eps = self.lse_enc, 
+            eps = self.eps_enc, 
             lse_mode = self.lse_enc, 
             num_iter = self.num_sinkhorn_iter,
             ot_scale = self.ot_scale_value),
