@@ -11,57 +11,12 @@ from jax import jit, random# type: ignore
 from tqdm import trange
 
 
-import wassersteinwormhole.utils_OT as utils_OT
+
+from wassersteinwormhole._utils_Processing import MaxMinScale, pad_pointclouds, get_max_dist_statistic
 from wassersteinwormhole._utils_Transformer import Metrics, TrainState, Transformer
 from wassersteinwormhole.DefaultConfig import DefaultConfig
+import wassersteinwormhole.utils_OT as utils_OT
 
-
-def MaxMinScale(arr):
-    """
-    :meta private:
-    """
-
-    arr = (
-        2
-        * (arr - arr.min(axis=0, keepdims=True))
-        / (arr.max(axis=0, keepdims=True) - arr.min(axis=0, keepdims=True))
-        - 1
-    )
-    return arr
-
-
-def pad_pointclouds(point_clouds, weights, max_shape=-1):
-    """
-    :meta private:
-    """
-
-    if max_shape == -1:
-        max_shape = np.max([pc.shape[0] for pc in point_clouds]) + 1
-    else:
-        max_shape = max_shape + 1
-
-
-    weights_pad = np.asarray(
-        [
-            np.concatenate((weight, np.zeros(max_shape - pc.shape[0])), axis=0)
-            for pc, weight in zip(point_clouds, weights)
-        ]
-    )
-    point_clouds_pad = np.asarray(
-        [
-            np.concatenate(
-                [pc, np.zeros([max_shape - pc.shape[0], pc.shape[-1]])], axis=0
-            )
-            for pc in point_clouds
-        ]
-    )
-
-    weights_pad = weights_pad / weights_pad.sum(axis=1, keepdims=True)
-
-    return (
-        point_clouds_pad[:, :-1].astype("float32"),
-        weights_pad[:, :-1].astype("float32"),
-    )
 
 
 
@@ -85,8 +40,20 @@ class Wormhole:
         weights=None,
         point_clouds_test=None,
         weights_test=None,
-        config=DefaultConfig,
+        config=None,
+        **kwargs,
     ):
+        
+        if len(point_clouds) < 2:
+            raise ValueError("Wormhole requires at least two point clouds for training.")
+
+        # If no config object is provided, start with the default.
+        if config is None:
+            config = DefaultConfig()
+
+        # Any kwargs provided will override the config settings.
+        if kwargs:
+            config = config.replace(**kwargs)
 
         self.config = config
         self.point_clouds = point_clouds
@@ -140,20 +107,15 @@ class Wormhole:
 
         self.lse_enc = config.lse_enc
         self.lse_dec = config.lse_dec
-
+        self.num_sinkhorn_iter = config.num_sinkhorn_iter
+        
         self.coeff_dec = config.coeff_dec
+  
 
         self.dist_func_enc = config.dist_func_enc
         self.dist_func_dec = config.dist_func_dec
 
-        self.jit_dist_enc = jax.jit(
-            jax.vmap(getattr(utils_OT, self.dist_func_enc), (0, 0, None, None), 0),
-            static_argnums=[2, 3],
-        )
-        self.jit_dist_dec = jax.jit(
-            jax.vmap(getattr(utils_OT, self.dist_func_dec), (0, 0, None, None), 0),
-            static_argnums=[2, 3],
-        )
+
 
         if self.coeff_dec < 0:
             self.jit_dist_dec = jax.jit(
@@ -168,6 +130,40 @@ class Wormhole:
             self.point_clouds_test = (
                 self.scale_func(self.point_clouds_test) * self.factor
             )
+
+        self.scale_ot = config.scale_ot
+        if self.scale_ot:
+            self.ot_scale_value = get_max_dist_statistic(self.point_clouds, self.weights, num_rand=1000, reduction="max")
+        else:
+            self.ot_scale_value  = 1.0
+
+        print("Using OT scale value of", "{:.2e}".format(self.ot_scale_value))
+
+        if(self.num_sinkhorn_iter == -1):
+            print("Automatically setting num_sinkhorn_iter by testing OT function")
+
+            self.num_sinkhorn_iter = utils_OT.auto_find_num_iter(point_clouds = self.point_clouds, 
+                                                                 weights = self.weights,
+                                                                 eps = self.eps_enc, lse_mode = self.lse_enc, ot_scale = self.ot_scale_value,
+                                                                 ot_func = self.dist_func_enc)
+            print("Setting num_sinkhorn_iter to", self.num_sinkhorn_iter)
+        else:
+            print("Using num_sinkhorn_iter =", self.num_sinkhorn_iter)
+
+        self.jit_dist_enc = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), 
+            eps = self.eps_enc, 
+            lse_mode = self.lse_enc, 
+            num_iter = self.num_sinkhorn_iter,
+            ot_scale = self.ot_scale_value),
+            (0, 0), 0))
+
+        self.jit_dist_dec = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), 
+            eps = self.eps_dec, 
+            lse_mode = self.lse_dec, 
+            num_iter = self.num_sinkhorn_iter,
+            ot_scale = self.ot_scale_value),
+            (0, 0), 0))
+
 
         self.pc_max_val = np.max(self.point_clouds[self.weights > 0])
         self.pc_min_val = np.min(self.point_clouds[self.weights > 0])
@@ -224,7 +220,7 @@ class Wormhole:
             return 2 * (point_clouds - self.min_val) / (self.max_val - self.min_val) - 1
         else:
             return point_clouds
-
+    
     def encode(self, pc, weights, max_batch=256):
         """
         Encode point clouds with trained Wormhole model
@@ -325,17 +321,13 @@ class Wormhole:
 
         pc_pairwise_dist = self.jit_dist_enc(
             [pc[self.tri_u_ind[:, 0]], weights[self.tri_u_ind[:, 0]]],
-            [pc[self.tri_u_ind[:, 1]], weights[self.tri_u_ind[:, 1]]],
-            self.eps_enc,
-            self.lse_enc,
-        )
+            [pc[self.tri_u_ind[:, 1]], weights[self.tri_u_ind[:, 1]]])
 
         enc_pairwise_dist = jnp.mean(
-            jnp.square(enc[self.tri_u_ind[:, 0]] - enc[self.tri_u_ind[:, 1]]), axis=1
-        )
+            jnp.square(enc[self.tri_u_ind[:, 0]] - enc[self.tri_u_ind[:, 1]]), axis=1)
+        
         pc_dec_dist = self.jit_dist_dec(
-            [pc, weights], [dec, self.pseudo_weights], self.eps_dec, self.lse_dec
-        )
+            [pc, weights], [dec, self.pseudo_weights])
 
         # pc_dec_dist = 0
         return (pc_pairwise_dist, enc_pairwise_dist, pc_dec_dist)

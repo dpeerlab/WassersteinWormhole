@@ -38,8 +38,10 @@ class DefaultConfig:
     eps_dec: float = 0.01
     lse_enc: bool = False
     lse_dec: bool = True
+    num_sinkhorn_iter: int = 200
     coeff_dec: float = 1
     scale: str = 'min_max_total'
+    scale_ot: bool = True
     factor: float = 1.0
     emb_dim: int = 128
     num_heads: int = 4
