@@ -10,9 +10,9 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-flax = "0.10.6"
-ott-jax = "0.4.9"
-clu = "0.0.12"
+flax = "^0.10.6"
+ott-jax = "^0.4.9"
+clu = "^0.0.12"
 tqdm = "^4.67.1"
 
 
