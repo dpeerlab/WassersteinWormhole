@@ -516,7 +516,7 @@ class Wormhole:
                 
             key, subkey = random.split(key)
             state, loss = self.train_step(
-                state, point_clouds_batch, weights_batch, augment, subkey
+                state, point_clouds_batch, weights_batch, subkey
             )
             self.params = state.params
 
