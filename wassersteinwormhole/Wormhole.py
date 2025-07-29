@@ -510,8 +510,9 @@ class Wormhole:
                 point_clouds_batch, weights_batch = sample_points(point_clouds_batch, weights_batch, keys, shape_sample)
                 
             if augment:
+                keys = jax.random.split(subkey, batch_size)
                 point_clouds_batch, weights_batch = augment_func(
-                    point_clouds_batch, weights_batch, subkey
+                    point_clouds_batch, weights_batch, keys
                 )
                 
             key, subkey = random.split(key)
