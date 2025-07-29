@@ -359,16 +359,11 @@ class Wormhole:
             apply_fn=self.model.apply, params=params, tx=tx, metrics=Metrics.empty()
         )
 
-    @partial(jit, static_argnums=(0,))
-    def train_step(self, state, pc, weights, augment = False, key=random.key(0)):
+    @partial(jit, static_argnums=(0))
+    def train_step(self, state, pc, weights, key=random.key(0)):
         """
         :meta private:
         """
-        if augment: 
-            # apply a random rotation to the point clouds
-            key, rotation_key = random.split(key)
-            rotation_matrices = jax.random.orthogonal(rotation_key, pc.shape[-1], shape=(pc.shape[0],))
-            pc = jnp.matmul(pc, rotation_matrices)
 
         def loss_fn(params):
             enc, dec = state.apply_fn(
@@ -425,6 +420,12 @@ class Wormhole:
         state = state.replace(metrics=metrics)
         return state
 
+    def augment_single_batch(self, single_batch, single_weights, key):
+        # apply a random rotation to the point cloud
+        rotation_matrix = jax.random.orthogonal(key, single_batch.shape[-1])
+        single_batch = jnp.matmul(single_batch, rotation_matrix)
+        return [single_batch, single_weights]
+    
     def sample_single_batch(self, single_batch, single_weights, key, n_points):
         indices = jax.random.choice(key, single_batch.shape[0], (n_points,), replace=False)
         sampled_pc = jnp.take(single_batch, indices, axis=0)
@@ -482,6 +483,10 @@ class Wormhole:
 
         augment = augment and np.isin(self.dist_func_enc, ["GW", "GS"])
 
+        if(augment):
+            print("Augmentation is ON, applying random rotations to point clouds")
+            augment_func = jax.vmap(self.augment_single_batch, in_axes=(0, 0, 0))
+
         for training_step in tq:
             key, subkey = random.split(key)
 
@@ -504,7 +509,11 @@ class Wormhole:
                 keys = jax.random.split(subkey, batch_size)
                 point_clouds_batch, weights_batch = sample_points(point_clouds_batch, weights_batch, keys, shape_sample)
                 
-
+            if augment:
+                point_clouds_batch, weights_batch = augment_func(
+                    point_clouds_batch, weights_batch, subkey
+                )
+                
             key, subkey = random.split(key)
             state, loss = self.train_step(
                 state, point_clouds_batch, weights_batch, augment, subkey
