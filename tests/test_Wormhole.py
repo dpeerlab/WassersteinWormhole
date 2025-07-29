@@ -18,8 +18,8 @@ def wormhole_factory():
     """
     def _create_wormhole(num_train=32, num_test=16, **kwargs):
         # 1. Generate random data for testing
-        point_cloud_sizes_train = np.random.randint(low=8, high=16, size=num_train)
-        point_cloud_sizes_test = np.random.randint(low=8, high=16, size=num_test)
+        point_cloud_sizes_train = np.random.randint(low=20, high=30, size=num_train)
+        point_cloud_sizes_test = np.random.randint(low=20, high=30, size=num_test)
         
         pc_train = [np.random.normal(size=[n, 2]) for n in point_cloud_sizes_train]
         pc_test = [np.random.normal(size=[n, 2]) for n in point_cloud_sizes_test]
@@ -136,3 +136,85 @@ def test_encoder_only_mode(wormhole_factory):
     dummy_weights = jnp.ones((2, 10)) / 10
     result = model.jit_dist_dec([dummy_pc, dummy_weights], [dummy_pc, dummy_weights])
     assert jnp.all(result == 0)
+
+# ---
+
+### Augmentation and Sampling Tests
+
+def test_shape_sampling_logic(wormhole_factory):
+    """
+    Tests the point cloud sub-sampling logic directly by calling the helper method.
+    """
+    model = wormhole_factory() # Create a default model to access the method
+    key = jax.random.PRNGKey(42)
+    
+    original_pc = jnp.ones((25, 3))
+    original_weights = jnp.ones(25) / 25
+    sample_size = 10
+    
+    sampled_pc, sampled_weights = model.sample_single_batch(
+        original_pc, original_weights, key, sample_size
+    )
+    
+    # Check that shapes are correct after sampling
+    assert sampled_pc.shape == (sample_size, 3)
+    assert sampled_weights.shape == (sample_size,)
+    
+    # Check that new weights are correctly re-normalized
+    assert jnp.isclose(jnp.sum(sampled_weights), 1.0)
+
+def test_train_with_shape_sampling(wormhole_factory):
+    """
+    Ensures training runs without errors when `shape_sample` is enabled.
+    This integration test verifies that the vmapped sampling function works
+    correctly within the main training loop.
+    """
+    model = wormhole_factory()
+    # Use a sample size smaller than the smallest possible point cloud
+    sample_size = 10 
+    
+    # This call will fail if shapes are mismatched after sampling
+    model.train(training_steps=2, batch_size=8, shape_sample=sample_size)
+    
+    # A simple assertion to confirm training steps were executed
+    assert len(model.enc_loss_curve) == 2
+
+@pytest.mark.parametrize(
+    "dist_func, augment, should_be_invariant",
+    [
+        # Augmentation with GW distance should produce a rotation-invariant encoder
+        ('GW', True, True),
+        # With a non-invariant metric (S2), augmentation is ignored and the encoder is not invariant
+        ('S2', True, False),
+        # Without augmentation, even the GW model should not learn an invariant encoder
+        ('GW', False, False),
+    ]
+)
+def test_rotation_invariance_property(wormhole_factory, dist_func, augment, should_be_invariant):
+    """
+    Tests that the encoder learns rotation invariance only when trained with
+    a rotation-invariant metric (GW) and augmentation is enabled.
+    """
+    # 1. Train a model with the specified configuration
+    model = wormhole_factory(dist_func_enc=dist_func)
+    # Train for a few steps to allow the property to be learned
+    model.train(training_steps=20, batch_size=8, augment=augment, verbose=25) 
+    
+    # 2. Create a sample point cloud and its rotated version
+    key = jax.random.PRNGKey(0)
+    pc = model.point_clouds[0:1] # Get one sample, keep batch dim
+    weights = model.weights[0:1]
+    
+    rotation_matrix = jax.random.orthogonal(key, N=pc.shape[-1])
+    pc_rotated = jnp.matmul(pc, rotation_matrix)
+    
+    # 3. Encode both the original and rotated point cloud
+    enc_original = model.encode(pc, weights)
+    enc_rotated = model.encode(pc_rotated, weights)
+    
+    # 4. Check if the embeddings are close (invariant) or not.
+    # We use a relatively high tolerance because training is minimal. The goal is
+    # to check for the property, not for perfect convergence.
+    are_close = jnp.allclose(enc_original, enc_rotated, atol=1e-1)
+    
+    assert are_close == should_be_invariant

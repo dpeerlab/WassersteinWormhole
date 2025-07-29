@@ -3,12 +3,12 @@ from functools import partial
 import jax # type: ignore
 import jax.numpy as jnp # type: ignore
 import jax.scipy as jsp # type: ignore
-import numpy as np 
+import numpy as np # type: ignore
 import optax # type: ignore
-import scipy.stats
+import scipy.stats # type: ignore
 from flax import linen as nn # type: ignore
 from jax import jit, random# type: ignore
-from tqdm import trange
+from tqdm import trange # type: ignore
 
 
 
@@ -360,10 +360,15 @@ class Wormhole:
         )
 
     @partial(jit, static_argnums=(0,))
-    def train_step(self, state, pc, weights, key=random.key(0)):
+    def train_step(self, state, pc, weights, augment = False, key=random.key(0)):
         """
         :meta private:
         """
+        if augment: 
+            # apply a random rotation to the point clouds
+            key, rotation_key = random.split(key)
+            rotation_matrices = jax.random.orthogonal(rotation_key, pc.shape[-1], shape=(pc.shape[0],))
+            pc = jnp.matmul(pc, rotation_matrices)
 
         def loss_fn(params):
             enc, dec = state.apply_fn(
@@ -381,11 +386,6 @@ class Wormhole:
             enc_loss = jnp.mean(jnp.square(pc_pairwise_dist - enc_pairwise_dist))
             dec_loss = jnp.mean(pc_dec_dist)
             enc_corr = jnp.corrcoef(enc_pairwise_dist, pc_pairwise_dist)[0, 1]
-
-            # return (
-            #      enc_loss,
-            #     [enc_loss, dec_loss, enc_corr],
-            # )
 
             return (
                 enc_loss + self.coeff_dec * dec_loss,
@@ -425,6 +425,14 @@ class Wormhole:
         state = state.replace(metrics=metrics)
         return state
 
+    def sample_single_batch(self, single_batch, single_weights, key, n_points):
+        indices = jax.random.choice(key, single_batch.shape[0], (n_points,), replace=False)
+        sampled_pc = jnp.take(single_batch, indices, axis=0)
+        sample_weights = jnp.take(single_weights, indices, axis=0)
+        sample_weights = sample_weights / jnp.sum(sample_weights)
+        
+        return [sampled_pc, sample_weights]
+    
     def train(
         self,
         training_steps=10000,
@@ -432,6 +440,8 @@ class Wormhole:
         verbose=8,
         init_lr=0.0001,
         decay_steps=2000,
+        shape_sample = None,
+        augment = False,
         key=random.key(0),
     ):
         """
@@ -450,6 +460,11 @@ class Wormhole:
 
         batch_size = min(self.point_clouds.shape[0], batch_size)
 
+        if(shape_sample is not None):
+            print(f'Sampling {shape_sample} points from each point cloud')
+            sample_points = jax.vmap(self.sample_single_batch, in_axes=(0, 0, 0, None))
+
+
         self.tri_u_ind = jnp.stack(jnp.triu_indices(batch_size, 1), axis=1)
         self.pseudo_weights = (
             jnp.ones([batch_size, self.out_seq_len]) / self.out_seq_len
@@ -464,6 +479,8 @@ class Wormhole:
         enc_loss_mean, dec_loss_mean, enc_corr_mean, count = 0, 0, 0, 0
 
         self.enc_loss_curve, self.dec_loss_curve = [], []
+
+        augment = augment and np.isin(self.dist_func_enc, ["GW", "GS"])
 
         for training_step in tq:
             key, subkey = random.split(key)
@@ -482,9 +499,15 @@ class Wormhole:
             else:
                 point_clouds_batch, weights_batch = self.point_clouds, self.weights
 
+                        
+            if(shape_sample is not None):
+                keys = jax.random.split(subkey, batch_size)
+                point_clouds_batch, weights_batch = sample_points(point_clouds_batch, weights_batch, keys, shape_sample)
+                
+
             key, subkey = random.split(key)
             state, loss = self.train_step(
-                state, point_clouds_batch, weights_batch, subkey
+                state, point_clouds_batch, weights_batch, augment, subkey
             )
             self.params = state.params
 
