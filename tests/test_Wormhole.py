@@ -18,8 +18,9 @@ def wormhole_factory():
     """
     def _create_wormhole(num_train=32, num_test=16, **kwargs):
         # 1. Generate random data for testing
-        point_cloud_sizes_train = np.random.randint(low=8, high=16, size=num_train)
-        point_cloud_sizes_test = np.random.randint(low=8, high=16, size=num_test)
+        # Use slightly larger point clouds to avoid issues with sampling
+        point_cloud_sizes_train = np.random.randint(low=20, high=30, size=num_train)
+        point_cloud_sizes_test = np.random.randint(low=20, high=30, size=num_test)
         
         pc_train = [np.random.normal(size=[n, 2]) for n in point_cloud_sizes_train]
         pc_test = [np.random.normal(size=[n, 2]) for n in point_cloud_sizes_test]
@@ -136,3 +137,64 @@ def test_encoder_only_mode(wormhole_factory):
     dummy_weights = jnp.ones((2, 10)) / 10
     result = model.jit_dist_dec([dummy_pc, dummy_weights], [dummy_pc, dummy_weights])
     assert jnp.all(result == 0)
+
+# ---
+
+### Augmentation and Sampling Tests
+
+def test_shape_sampling_logic(wormhole_factory):
+    """
+    Tests the point cloud sub-sampling logic directly by calling the helper method.
+    """
+    model = wormhole_factory() # Create a default model to access the method
+    key = jax.random.PRNGKey(42)
+    
+    original_pc = jnp.ones((25, 3))
+    original_weights = jnp.ones(25) / 25
+    sample_size = 10
+    
+    sampled_pc, sampled_weights = model.sample_single_batch(
+        original_pc, original_weights, key, sample_size
+    )
+    
+    # Check that shapes are correct after sampling
+    assert sampled_pc.shape == (sample_size, 3)
+    assert sampled_weights.shape == (sample_size,)
+    
+    # Check that new weights are correctly re-normalized
+    assert jnp.isclose(jnp.sum(sampled_weights), 1.0)
+
+def test_train_with_shape_sampling(wormhole_factory):
+    """
+    Ensures training runs without errors when `shape_sample` is enabled.
+    This integration test verifies that the vmapped sampling function works
+    correctly within the main training loop.
+    """
+    model = wormhole_factory()
+    # Use a sample size smaller than the smallest possible point cloud
+    sample_size = 10 
+    
+    # This call will fail if shapes are mismatched after sampling
+    model.train(training_steps=2, batch_size=8, shape_sample=sample_size)
+    
+    # A simple assertion to confirm training steps were executed
+    assert len(model.enc_loss_curve) == 2
+
+@pytest.mark.parametrize("dist_func", ['GW', 'GS', 'S2'])
+def test_augmentation_runs_without_error(wormhole_factory, dist_func):
+    """
+    Verifies that training with `augment=True` runs without error for both
+    rotation-invariant metrics (GW, GS) and non-invariant metrics (S2).
+    """
+    model = wormhole_factory(dist_func_enc=dist_func)
+
+    # This test's main purpose is to ensure that the following call
+    # executes without raising any exceptions. A failure would indicate a
+    # problem with the rotation logic or its conditional execution.
+    try:
+        model.train(training_steps=2, augment=True)
+    except Exception as e:
+        pytest.fail(f"Training with augment=True and dist_func='{dist_func}' failed: {e}")
+    
+    # A simple check to confirm training steps were recorded, indicating success
+    assert len(model.enc_loss_curve) == 2
