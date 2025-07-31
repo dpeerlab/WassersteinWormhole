@@ -38,6 +38,7 @@ class DefaultConfig:
     eps_dec: float = 0.01
     lse_enc: bool = False
     lse_dec: bool = True
+    out_seq_len: int = -1
     num_sinkhorn_iter: int = 200
     coeff_dec: float = 1
     scale: str = 'min_max_total'
@@ -46,7 +47,6 @@ class DefaultConfig:
     emb_dim: int = 128
     num_heads: int = 4
     num_layers: int = 3
-    qkv_dim: int = 512
     mlp_dim: int = 512
     attention_dropout_rate: float = 0.1
     kernel_init: Callable = nn.initializers.glorot_uniform()

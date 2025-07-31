@@ -1,10 +1,16 @@
 import numpy as np
 import scipy.spatial
 from tqdm import tqdm
+import numpy as np
+import scipy.spatial
+from tqdm import tqdm
 
-def get_max_dist_statistic(point_clouds, weights, num_rand=100, dist_func_enc='S2', reduction='mean'):
+def get_max_dist_statistic(point_clouds, weights, num_rand=100, dist_func_enc='S2', reduction='mean', sample_size=2048):
     """
     Calculates a statistic (mean or max) of the maximum distances between random pairs of point clouds.
+
+    For performance, if a point cloud contains more points than `sample_size`, a random subset of
+    `sample_size` points is used for the calculation.
 
     :param point_clouds: (list) A list of point cloud coordinate arrays.
     :param weights: (list) A list of corresponding weight arrays for each point cloud.
@@ -13,6 +19,7 @@ def get_max_dist_statistic(point_clouds, weights, num_rand=100, dist_func_enc='S
                           squared Euclidean distance. Others use L1 (Cityblock) distance.
     :param reduction: (str) The reduction to apply to the list of max distances.
                       Can be either 'mean' or 'max'.
+    :param sample_size: (int) The number of points to sample from larger point clouds.
     :return: (float) The calculated statistic (either the mean or the overall max) of the max distances.
     """
     # 1. Validate the reduction parameter
@@ -40,6 +47,18 @@ def get_max_dist_statistic(point_clouds, weights, num_rand=100, dist_func_enc='S
         i, j = np.random.choice(len(point_clouds), 2, replace=False)
         x, a = point_clouds[i], weights[i]
         y, b = point_clouds[j], weights[j]
+
+        # --- OPTIMIZATION: Sample large point clouds to speed up calculation ---
+        if len(x) > sample_size:
+            indices_x = np.random.choice(len(x), sample_size, replace=False)
+            x = x[indices_x]
+            a = a[indices_x]
+        
+        if len(y) > sample_size:
+            indices_y = np.random.choice(len(y), sample_size, replace=False)
+            y = y[indices_y]
+            b = b[indices_y]
+        # --------------------------------------------------------------------
 
         # Calculate the distance matrix
         dist_matrix = scipy.spatial.distance.cdist(x, y, metric=cdist_metric)

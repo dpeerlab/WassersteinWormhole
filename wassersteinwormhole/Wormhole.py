@@ -96,10 +96,16 @@ class Wormhole:
         self.scale_weights = np.exp(
             -jsp.special.xlogy(self.weights, self.weights).sum(axis=1)
         ).mean()
-        self.out_seq_len = int(
-            jnp.exp(-jsp.special.xlogy(self.weights, self.weights).sum(axis=1)).mean()
-        )
 
+        if(self.config.out_seq_len == -1):
+            self.out_seq_len = int(
+                jnp.exp(-jsp.special.xlogy(self.weights, self.weights).sum(axis=1)).mean()
+            )
+        else:
+            self.out_seq_len = self.config.out_seq_len
+
+        print("Decoder generating point-clouds of size: ", self.out_seq_len)
+        
         self.inp_dim = self.point_clouds.shape[-1]
 
         self.eps_enc = config.eps_enc
@@ -337,13 +343,15 @@ class Wormhole:
         :meta private:
         """
 
+        sample_size = min(256, self.point_clouds.shape[0])
+
         key, subkey = random.split(key)
         params = self.model.init(
             rngs={"params": key},
             dropout_rng=subkey,
             deterministic=False,
-            inputs=self.point_clouds[0:1],
-            weights=self.weights[0:1],
+            inputs=self.point_clouds[0:1][:, :sample_size],
+            weights=self.weights[0:1][:, :sample_size],
         )["params"]
 
         if decay_steps < 0:
@@ -476,7 +484,7 @@ class Wormhole:
             subkey, init_lr=init_lr, decay_steps=decay_steps
         )
 
-        tq = trange(training_steps, leave=True, desc="")
+
         enc_loss_mean, dec_loss_mean, enc_corr_mean, count = 0, 0, 0, 0
 
         self.enc_loss_curve, self.dec_loss_curve = [], []
@@ -487,6 +495,7 @@ class Wormhole:
             print("Augmentation is ON, applying random rotations to point clouds")
             augment_func = jax.vmap(self.augment_single_batch, in_axes=(0, 0, 0))
 
+        tq = trange(training_steps, leave=True, desc="")
         for training_step in tq:
             key, subkey = random.split(key)
 
@@ -514,7 +523,6 @@ class Wormhole:
                 point_clouds_batch, weights_batch = augment_func(
                     point_clouds_batch, weights_batch, keys
                 )
-                
             key, subkey = random.split(key)
             state, loss = self.train_step(
                 state, point_clouds_batch, weights_batch, subkey
