@@ -225,12 +225,13 @@ def Zeros(x, y, eps, lse_mode = False, num_iter = 200, ot_scale = 1):
     
     return(0)
 
-def auto_find_num_iter(point_clouds, weights, eps, lse_mode, ot_scale, ot_func, num_calc=100):
+def auto_find_num_iter(point_clouds, weights, eps, lse_mode, ot_scale, ot_func, num_calc=100, sample_size=2048):
     """
     Find the minimum number of iterations for which at least 80% of OT calculations converge.
 
-    It tests a predefined list of iteration counts [100, 200, 500, 1000, 5000] on randomly
-    sampled pairs of point clouds.
+    It tests a predefined list of iteration counts on randomly sampled pairs of point clouds.
+    For performance, if a point cloud contains more points than `sample_size`, a random subset
+    is used for the calculation.
 
     :param point_clouds: (list) A list of point cloud coordinate arrays.
     :param weights: (list) A list of corresponding weight arrays for each point cloud.
@@ -239,6 +240,7 @@ def auto_find_num_iter(point_clouds, weights, eps, lse_mode, ot_scale, ot_func, 
     :param ot_scale: (float) Scaling factor for the cost matrix.
     :param ot_func: (str) The name of the OT function to test (e.g., 'W1', 'GW').
     :param num_calc: (int) The number of random pairs to test for each iteration count.
+    :param sample_size: (int) The number of points to sample from larger point clouds.
 
     :return: (int) The recommended number of iterations.
     """
@@ -252,11 +254,23 @@ def auto_find_num_iter(point_clouds, weights, eps, lse_mode, ot_scale, ot_func, 
 
     for n_iter in num_iter_test:
         converged_count = 0
-        for _ in tqdm(range(num_calc), desc="Testing convergence for " + ot_func + " with " + str(n_iter) + " iterations"):
+        for _ in tqdm(range(num_calc), desc=f"Testing {ot_func} convergence with {n_iter} iterations"):
             # Randomly select two different point clouds for comparison
             idx1, idx2 = np.random.choice(num_clouds, 2, replace=False)
             x_points, a_weights = point_clouds[idx1], weights[idx1]
             y_points, b_weights = point_clouds[idx2], weights[idx2]
+
+            # --- OPTIMIZATION: Sample large point clouds to speed up calculation ---
+            if len(x_points) > sample_size:
+                indices_x = np.random.choice(len(x_points), sample_size, replace=False)
+                x_points = x_points[indices_x]
+                a_weights = a_weights[indices_x]
+            
+            if len(y_points) > sample_size:
+                indices_y = np.random.choice(len(y_points), sample_size, replace=False)
+                y_points = y_points[indices_y]
+                b_weights = b_weights[indices_y]
+            # --------------------------------------------------------------------
 
             # Replicate solver logic to access the convergence status
             ot_solve = None
@@ -298,11 +312,17 @@ def auto_find_num_iter(point_clouds, weights, eps, lse_mode, ot_scale, ot_func, 
                 continue
 
         # Check if the convergence rate is 80% or higher
-
-        print("Convergence rate for " + ot_func + " with " + str(n_iter) + " iterations: " + str(round(converged_count / num_calc, 2) * 100) + "%")
+        convergence_rate = round((converged_count / num_calc) * 100)
+        print(f"Convergence rate for {ot_func} with {n_iter} iterations: {convergence_rate}%")
 
         if (converged_count / num_calc) >= 0.8:
             return n_iter
 
     # If no value meets the criterion, return the highest tested number of iterations
     return num_iter_test[-1]
+
+
+
+
+
+
