@@ -2,7 +2,7 @@ from flax import struct
 from flax import linen as nn
 import jax.numpy as jnp
 
-from typing import Callable, Any
+from typing import Callable, Any, Optional
 
 @struct.dataclass
 class DefaultConfig:
@@ -24,7 +24,6 @@ class DefaultConfig:
     :param emb_dim: (int) Wormhole embedding dimention (defulat 128)
     :param num_heads: (int) number of heads in multi-head attention (default 4)
     :param num_layers: (int) number of layers of multi-head attention for Wormhole encoder and decoder (default 3)
-    :param qkv_dim: (int) dimention of query, key and value attributes in attention (default 512)
     :param mlp_dim: (int) dimention of hidden layer for fully-connected network after every multi-head attention layer
     :param attention_dropout_rate: (float) dropout rate for attention matrices during training (default 0.1)
     :param kernel_init: (Callable) initializer of kernel weights (default nn.initializers.glorot_uniform())
@@ -51,3 +50,17 @@ class DefaultConfig:
     attention_dropout_rate: float = 0.1
     kernel_init: Callable = nn.initializers.glorot_uniform()
     bias_init: Callable = nn.initializers.zeros_init()
+
+@struct.dataclass
+class SpatialDefaultConfig(DefaultConfig):
+    """
+    Default configuration for SpatialWormhole, inheriting from DefaultConfig.
+    
+    Adds parameters specific to handling AnnData objects.
+    
+    :param rep: (str, optional) The key in `adata.obsm` to use as the expression representation. If None, `adata.X` is used. (default None)
+    :param batch_key: (str, optional) The key in `adata.obs` that denotes the sample/batch for each cell. If None, all cells are treated as one batch. (default None)
+    """
+    rep: Optional[str] = None
+    batch_key: Optional[str] = None
+    spatial_key: str = 'spatial'
