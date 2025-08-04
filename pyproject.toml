@@ -14,7 +14,7 @@ flax = "^0.10.6"
 ott-jax = "^0.4.9"
 clu = "^0.0.12"
 tqdm = "^4.67.1"
-
+scanpy = "^1.11.2" 
 
 [build-system]
 requires = ["poetry-core"]
