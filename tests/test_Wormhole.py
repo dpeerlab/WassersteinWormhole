@@ -157,7 +157,7 @@ def spatial_wormhole_factory():
         # 2. Instantiate and return the SpatialWormhole model
         model = SpatialWormhole(
             adata_train=adata,
-            k=k,
+            k_neighbours=k,
             **kwargs
         )
         return model
