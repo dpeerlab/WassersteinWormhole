@@ -139,7 +139,7 @@ class Wormhole:
 
         self.scale_ot = config.scale_ot
         if self.scale_ot:
-            self.ot_scale_value = get_max_dist_statistic(self.point_clouds, self.weights, num_rand=1000, reduction="max")
+            self.ot_scale_value = get_max_dist_statistic(self.point_clouds, self.weights, num_rand=1000, reduction="max", dist_func_enc = self.dist_func_enc)
         else:
             self.ot_scale_value  = 1.0
 

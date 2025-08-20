@@ -157,7 +157,7 @@ def spatial_wormhole_factory():
         # 2. Instantiate and return the SpatialWormhole model
         model = SpatialWormhole(
             adata_train=adata,
-            k=k,
+            k_neighbours=k,
             **kwargs
         )
         return model
@@ -257,7 +257,7 @@ def test_spatial_with_batch_key(spatial_wormhole_factory):
     adata.obs['sample'] = ['A'] * (num_cells // 2) + ['B'] * (num_cells // 2)
     
     # This will fail if the per-batch kNN logic is broken
-    model = SpatialWormhole(adata_train=adata, k=k, batch_key='sample')
+    model = SpatialWormhole(adata_train=adata, k_neighbours=k, batch_key='sample')
     
     # Check that neighbor indices were computed for all cells
     assert len(model.niche_indices_train) == num_cells

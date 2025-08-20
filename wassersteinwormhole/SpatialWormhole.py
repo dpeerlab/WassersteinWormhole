@@ -38,7 +38,7 @@ class SpatialWormhole:
     def __init__(
         self,
         adata_train,
-        k,
+        k_neighbours,
         adata_test=None,
         config=None,
         **kwargs,
@@ -54,13 +54,13 @@ class SpatialWormhole:
         if kwargs:
             config = config.replace(**kwargs)
         self.config = config
-        self.k = k
+        self.k_neighbours = k_neighbours
         
         self.adata_train = adata_train
         print("Pre-computing neighbor indices and caching expression data...")
-        self.exp_data_train = self._get_exp_data(self.adata_train, self.config.rep)
+        self.exp_data_train = self._get_exp_data(self.adata_train, self.config.rep_key)
         self.niche_indices_train = self._get_niche_indices(
-            self.adata_train, self.k, self.config.spatial_key, self.config.batch_key
+            self.adata_train, self.k_neighbours, self.config.spatial_key, self.config.batch_key
         )
         
         # Determine the maximum niche size for padding across the entire dataset
@@ -69,18 +69,21 @@ class SpatialWormhole:
 
         if adata_test is not None:
             self.adata_test = adata_test
-            self.exp_data_test = self._get_exp_data(self.adata_test, self.config.rep)
+            self.exp_data_test = self._get_exp_data(self.adata_test, self.config.rep_key)
             self.niche_indices_test = self._get_niche_indices(
-                self.adata_test, self.k, self.config.spatial_key, self.config.batch_key
+                self.adata_test, self.k_neighbours, self.config.spatial_key, self.config.batch_key
             )
             self.max_niche_size = max(self.max_niche_size, max(len(indices) for indices in self.niche_indices_test))
 
         # --- The rest of the init is similar ---
-        self.scale_weights = float(self.k)
+        self.scale_weights = float(self.k_neighbours)
         self.out_seq_len = self.config.out_seq_len if self.config.out_seq_len != -1 else self.max_niche_size
         print("Decoder generating point-clouds of size: ", self.out_seq_len)
-        self.inp_dim = self.adata_train.shape[1]
-        
+
+        if(self.config.rep_key is None):
+            self.inp_dim = self.adata_train.shape[1]
+        else:
+            self.inp_dim = self.adata_train.obsm[self.config.rep_key].shape[1]    
         self.eps_enc = config.eps_enc
         self.eps_dec = config.eps_dec
         self.lse_enc = config.lse_enc
@@ -101,11 +104,8 @@ class SpatialWormhole:
         self.scale_ot = config.scale_ot
         if self.scale_ot:
             print("Calculating OT scale value from a sample of niches...")
-            sample_pcs, _ = self._assemble_and_pad_batch(np.random.choice(self.adata_train.shape[0], min(self.adata_train.shape[0], 1000), replace=False))
-            # get_max_dist_statistic needs weights, but we can pass None if it handles it, or create dummy ones.
-            # Let's create weights for it.
-            dummy_weights = np.ones(sample_pcs.shape[:-1]) / self.k
-            self.ot_scale_value = get_max_dist_statistic(sample_pcs, dummy_weights, num_rand=100, reduction="max")
+            sample_pcs, sample_weights = self._assemble_and_pad_batch(np.random.choice(self.adata_train.shape[0], min(self.adata_train.shape[0], 1000), replace=False))
+            self.ot_scale_value = get_max_dist_statistic(sample_pcs, sample_weights, num_rand=100, reduction="max", dist_func_enc = self.dist_func_enc)
         else:
             self.ot_scale_value  = 1.0
         print("Using OT scale value of", "{:.2e}".format(self.ot_scale_value))
@@ -221,7 +221,8 @@ class SpatialWormhole:
         state = self.create_train_state(subkey, init_lr=init_lr, decay_steps=decay_steps)
 
         self.enc_loss_curve, self.dec_loss_curve = [], []
-        
+
+        print("Starting training loop using adam...")
         tq = trange(training_steps, leave=True, desc="")
         for training_step in tq:
             key, subkey = random.split(key)
@@ -242,7 +243,33 @@ class SpatialWormhole:
             # --- Logging logic ---
             self.enc_loss_curve.append(loss[1][0])
             self.dec_loss_curve.append(loss[1][1])
-            # ... (Full logging logic as before)
+            
+
+            if training_step % verbose == 0:
+                print_statement = ""
+                for metric, value in zip(
+                    ["enc_loss", "dec_loss", "enc_corr"],
+                    [loss[1][0], loss[1][1], loss[1][2]],
+                ):
+                    if metric == "enc_corr":
+                        print_statement = (
+                            print_statement
+                            + " "
+                            + metric
+                            + ": {:.3f}".format(value)
+                        )
+                    else:
+                        print_statement = (
+                            print_statement
+                            + " "
+                            + metric
+                            + ": {:.3e}".format(value)
+                        )
+
+                # state.replace(metrics=state.metrics.empty())
+                tq.set_description(print_statement)
+                tq.refresh()  # to show immediately the update
+
 
     def encode(self, cell_indices, from_test_set=False, max_batch=256):
         """
@@ -274,7 +301,7 @@ class SpatialWormhole:
             
         return np.concatenate(all_encodings, axis=0)
 
-    def create_train_state(self, key=random.key(0), init_lr=0.0001, decay_steps=2000):
+    def create_train_state(self, key=random.key(0), init_lr=0.0001, decay_steps=1000):
         """Initializes the training state. :meta private:"""
         # We need a sample batch to initialize the model parameters
         sample_indices = np.random.choice(self.adata_train.shape[0], min(self.adata_train.shape[0], 32), replace=False)
@@ -286,11 +313,9 @@ class SpatialWormhole:
             inputs=sample_pcs, weights=sample_weights,
         )["params"]
 
-        if decay_steps < 0:
-            tx = optax.rmsprop(init_lr)
-        else:
-            lr_sched = optax.exponential_decay(init_lr, decay_steps, 0.75, staircase=True)
-            tx = optax.rmsprop(lr_sched)
+
+        lr_sched = optax.exponential_decay(init_lr, decay_steps, 0.98, staircase=False)
+        tx = optax.adam(lr_sched)
 
         return TrainState.create(
             apply_fn=self.model.apply, params=params, tx=tx, metrics=Metrics.empty()

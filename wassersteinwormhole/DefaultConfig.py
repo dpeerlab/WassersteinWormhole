@@ -61,6 +61,6 @@ class SpatialDefaultConfig(DefaultConfig):
     :param rep: (str, optional) The key in `adata.obsm` to use as the expression representation. If None, `adata.X` is used. (default None)
     :param batch_key: (str, optional) The key in `adata.obs` that denotes the sample/batch for each cell. If None, all cells are treated as one batch. (default None)
     """
-    rep: Optional[str] = None
+    rep_key: Optional[str] = None
     batch_key: Optional[str] = None
     spatial_key: str = 'spatial'
