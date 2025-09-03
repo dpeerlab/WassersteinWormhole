@@ -1,4 +1,5 @@
 from functools import partial
+import pickle
 
 import jax # type: ignore
 import jax.numpy as jnp # type: ignore
@@ -398,3 +399,70 @@ class SpatialWormhole:
         loss, grads = grad_fn(state.params)
         state = state.apply_gradients(grads=grads)
         return (state, loss)
+    
+    def save(self, file_path):
+        """
+        Saves the trained model's parameters and configuration to a file.
+        The AnnData objects are not saved and must be provided when loading.
+
+        :param file_path: (str) The path to save the model file to (e.g., 'model.pkl').
+        """
+
+
+        if not hasattr(self, 'params'):
+            raise RuntimeError("Model has not been trained yet. Cannot save an untrained model.")
+
+        # Prepare a dictionary with all the necessary components to restore the model state.
+        # We don't save AnnData objects as they are large and user-provided.
+        state_to_save = {
+            'params': self.params,
+            'config': self.config,
+            'k_neighbours': self.k_neighbours,
+            'ot_scale_value': self.ot_scale_value,
+            'num_sinkhorn_iter': self.num_sinkhorn_iter,
+        }
+
+        print(f"Saving model to {file_path}...")
+        with open(file_path, 'wb') as f:
+            pickle.dump(state_to_save, f)
+        print("Model saved successfully.")
+
+    @classmethod
+    def load(cls, file_path, adata_train, adata_test=None):
+        """
+        Loads a trained model from a file and returns an initialized instance.
+
+        Note: The AnnData objects are required to correctly initialize the model's
+        data-dependent properties (like neighbor graphs and padding size).
+
+        :param file_path: (str) The path to the saved model file.
+        :param adata_train: (anndata.AnnData) The training anndata object used originally.
+        :param adata_test: (anndata.AnnData) The testing anndata object, if used.
+        :return: An initialized and trained SpatialWormhole instance.
+        """
+        print(f"Loading model from {file_path}...")
+        with open(file_path, 'rb') as f:
+            saved_state = pickle.load(f)
+        print("Model file loaded. Initializing SpatialWormhole instance...")
+
+        # Initialize a new instance with the saved configuration
+        instance = cls(
+            adata_train=adata_train,
+            k_neighbours=saved_state['k_neighbours'],
+            adata_test=adata_test,
+            config=saved_state['config']
+        )
+
+        # Restore the saved parameters
+        instance.params = saved_state['params']
+        
+        # Restore other important attributes to their trained values
+        instance.ot_scale_value = saved_state['ot_scale_value']
+        instance.num_sinkhorn_iter = saved_state['num_sinkhorn_iter']
+        
+        # Re-create the JIT-compiled distance functions with the loaded parameters
+        instance.jit_dist_enc = jax.jit(jax.vmap(partial(getattr(utils_OT, instance.dist_func_enc), eps=instance.eps_enc, lse_mode=instance.lse_enc, num_iter=instance.num_sinkhorn_iter, ot_scale=instance.ot_scale_value), (0, 0), 0))
+        instance.jit_dist_dec = jax.jit(jax.vmap(partial(getattr(utils_OT, instance.dist_func_dec), eps=instance.eps_dec, lse_mode=instance.lse_dec, num_iter=instance.num_sinkhorn_iter, ot_scale=instance.ot_scale_value), (0, 0), 0))
+
+        print("Trained model state restored successfully.")
+        return instance
