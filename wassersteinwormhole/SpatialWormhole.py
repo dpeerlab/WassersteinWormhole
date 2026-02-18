@@ -54,10 +54,42 @@ class SpatialWormhole:
         if 'spatial' not in adata_train.obsm:
              raise ValueError("Input 'adata_train' must have spatial coordinates in .obsm['spatial'].")
 
-        if config is None:
-            config = SpatialDefaultConfig()
+        # Start with the default config
+        default_config = SpatialDefaultConfig()
+        
+        # If user provided a config, check for missing fields and fill with defaults
+        if config is not None:
+            config_fields = set(default_config.__dataclass_fields__.keys())
+            missing_keys = [field for field in config_fields if not hasattr(config, field)]
+            
+            if missing_keys:
+                print(f"Adding missing default config keys: {missing_keys}")
+                # Build complete config with user values + defaults for missing fields
+                config_dict = {}
+                for field_name in config_fields:
+                    if hasattr(config, field_name):
+                        config_dict[field_name] = getattr(config, field_name)
+                    else:
+                        config_dict[field_name] = getattr(default_config, field_name)
+                config = type(default_config)(**config_dict)
+        else:
+            config = default_config
+
+        # Apply kwargs, separating valid config fields from extra kwargs
         if kwargs:
-            config = config.replace(**kwargs)
+            config_fields = set(config.__dataclass_fields__.keys())
+            valid_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
+            extra_kwargs = {k: v for k, v in kwargs.items() if k not in config_fields}
+            
+            # Apply valid kwargs to config using replace
+            if valid_kwargs:
+                config = config.replace(**valid_kwargs)
+            
+            # Store extra kwargs that aren't in DefaultConfig
+            if extra_kwargs:
+                print(f"Extra kwargs not in DefaultConfig (storing separately): {list(extra_kwargs.keys())}")
+                self.extra_config = extra_kwargs
+        
         self.config = config
         self.k_neighbours = k_neighbours
         
