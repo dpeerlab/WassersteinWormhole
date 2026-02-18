@@ -91,7 +91,7 @@ def test_encode_decode_logic(wormhole_factory):
     assert train_encodings.shape == (model.point_clouds.shape[0], model.config.emb_dim)
     
     train_decodings = model.decode(train_encodings)
-    assert train_decodings.shape == (model.point_clouds.shape[0], model.out_seq_len, model.inp_dim)
+    assert train_decodings.shape == (model.point_clouds.shape[0], model.num_particles_output, model.inp_dim)
     
 ### Specific Feature Tests
 
@@ -231,7 +231,7 @@ def test_spatial_encode_decode_logic(spatial_wormhole_factory):
     
     # Decode the embeddings
     decodings = model.decode(encodings)
-    assert decodings.shape == (len(cell_indices_to_encode), model.out_seq_len, model.inp_dim)
+    assert decodings.shape == (len(cell_indices_to_encode), model.num_particles_output, model.inp_dim)
 
 ### Spatial Edge Case Tests
 
