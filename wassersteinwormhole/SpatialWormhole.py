@@ -114,8 +114,8 @@ class SpatialWormhole:
 
         # --- The rest of the init is similar ---
         self.scale_weights = float(self.k_neighbours)
-        self.out_seq_len = self.config.out_seq_len if self.config.out_seq_len != -1 else self.max_niche_size
-        print("Decoder generating point-clouds of size: ", self.out_seq_len)
+        self.num_particles_output = self.config.num_particles_output if self.config.num_particles_output != -1 else self.max_niche_size
+        print("Decoder generating point-clouds of size: ", self.num_particles_output)
 
         if(self.config.rep_key is None):
             self.inp_dim = self.adata_train.shape[1]
@@ -269,7 +269,7 @@ class SpatialWormhole:
         batch_size = min(num_train_cells, batch_size)
 
         self.tri_u_ind = jnp.stack(jnp.triu_indices(batch_size, 1), axis=1)
-        self.pseudo_weights = jnp.ones([batch_size, self.out_seq_len]) / self.out_seq_len
+        self.pseudo_weights = jnp.ones([batch_size, self.num_particles_output]) / self.num_particles_output
 
         key, subkey = random.split(key)
         state = self.create_train_state(subkey, init_lr=init_lr, decay_steps=decay_steps)
