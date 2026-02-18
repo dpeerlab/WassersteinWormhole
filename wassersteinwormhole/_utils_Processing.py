@@ -1,9 +1,7 @@
 import numpy as np
 import scipy.spatial
 from tqdm import tqdm
-import numpy as np
-import scipy.spatial
-from tqdm import tqdm
+import jax.numpy as jnp
 
 def get_max_dist_statistic(point_clouds, weights, num_rand=100, dist_func_enc='S2', reduction='mean', sample_size=2048):
     """
@@ -74,6 +72,57 @@ def get_max_dist_statistic(point_clouds, weights, num_rand=100, dist_func_enc='S
     if reduction == 'mean':
         return np.mean(max_distances)
     else: # reduction == 'max'
+        return np.max(max_distances)
+
+def get_max_dist_statistic_riemannian(point_clouds, weights, dist_metric, num_rand=100, reduction='mean', sample_size=2048):
+    """
+    Calculates a statistic (mean or max) of the maximum distances between random pairs of point clouds
+    using a custom Riemannian distance metric (cost function).
+
+    :param point_clouds: (list) A list of point cloud coordinate arrays.
+    :param weights: (list) A list of corresponding weight arrays for each point cloud.
+    :param dist_metric: (Callable) A function that takes two point clouds (JAX arrays) and returns a distance matrix.
+    :param num_rand: (int) The number of random pairs to sample.
+    :param reduction: (str) The reduction to apply to the list of max distances ('mean' or 'max').
+    :param sample_size: (int) The number of points to sample from larger point clouds.
+    :return: (float) The calculated statistic.
+    """
+    if reduction not in ['mean', 'max']:
+        raise ValueError("The `reduction` parameter must be either 'mean' or 'max'.")
+
+    max_distances = []
+    progress_desc = f"Calculating {reduction} of max distances (Riemannian metric)"
+
+    for _ in tqdm(range(num_rand), desc=progress_desc):
+        i, j = np.random.choice(len(point_clouds), 2, replace=False)
+        x, a = point_clouds[i], weights[i]
+        y, b = point_clouds[j], weights[j]
+
+        if len(x) > sample_size:
+            indices_x = np.random.choice(len(x), sample_size, replace=False)
+            x = x[indices_x]
+            a = a[indices_x]
+        
+        if len(y) > sample_size:
+            indices_y = np.random.choice(len(y), sample_size, replace=False)
+            y = y[indices_y]
+            b = b[indices_y]
+
+        # Ensure inputs are JAX arrays for the metric function
+        x_jax = jnp.array(x)
+        y_jax = jnp.array(y)
+        
+        dist_matrix = dist_metric(x_jax, y_jax)
+        
+        # Convert to numpy for CPU-side operations (masking/max)
+        dist_matrix = np.array(dist_matrix)
+        
+        weighted_dist_matrix = dist_matrix * (np.outer(a, b) > 0)
+        max_distances.append(np.max(weighted_dist_matrix))
+    
+    if reduction == 'mean':
+        return np.mean(max_distances)
+    else:
         return np.max(max_distances)
 
 def MaxMinScale(arr):

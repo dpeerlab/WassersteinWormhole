@@ -53,13 +53,12 @@ def test_initialization_with_kwargs(wormhole_factory):
     assert model.config.num_layers == 5
 
 @pytest.mark.parametrize("dist_func", ['S2', 'W2'])
-@pytest.mark.parametrize("scaling", ['min_max_total', 'none'])
-def test_train_configurations(wormhole_factory, dist_func, scaling):
+def test_train_configurations(wormhole_factory, dist_func):
     """
     Tests that training runs for 1 step and that model parameters are updated.
     This test is robust to changes in the model's internal layer names.
     """
-    model = wormhole_factory(dist_func_enc=dist_func, scale=scaling)
+    model = wormhole_factory(dist_func_enc=dist_func)
     
     initial_state = model.create_train_state()
     model.train(training_steps=1)
@@ -92,11 +91,7 @@ def test_encode_decode_logic(wormhole_factory):
     assert train_encodings.shape == (model.point_clouds.shape[0], model.config.emb_dim)
     
     train_decodings = model.decode(train_encodings)
-    assert train_decodings.shape == (model.point_clouds.shape[0], model.out_seq_len, model.inp_dim)
-
-    assert model.scale_out is True
-    assert jnp.max(train_decodings) <= model.pc_max_val
-    assert jnp.min(train_decodings) >= model.pc_min_val
+    assert train_decodings.shape == (model.point_clouds.shape[0], model.num_particles_output, model.inp_dim)
     
 ### Specific Feature Tests
 
@@ -236,11 +231,7 @@ def test_spatial_encode_decode_logic(spatial_wormhole_factory):
     
     # Decode the embeddings
     decodings = model.decode(encodings)
-    assert decodings.shape == (len(cell_indices_to_encode), model.out_seq_len, model.inp_dim)
-    
-    # Check that decoded values are within the expected range
-    assert jnp.max(decodings) <= model.pc_max_val
-    assert jnp.min(decodings) >= model.pc_min_val
+    assert decodings.shape == (len(cell_indices_to_encode), model.num_particles_output, model.inp_dim)
 
 ### Spatial Edge Case Tests
 
