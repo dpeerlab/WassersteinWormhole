@@ -1,7 +1,6 @@
 from typing import Any, Optional
 
 import jax.numpy as jnp  # type: ignore
-from clu import metrics
 from flax import linen as nn
 from flax import struct
 from flax.training import train_state  # type: ignore
@@ -65,18 +64,18 @@ class Multiplyer(nn.Module):
     """
 
     config: DefaultConfig
-    out_seq_len: int
+    num_particles_output: int
 
     @nn.compact
     def __call__(self, inputs):
         config = self.config
         output = nn.Dense(
-            config.emb_dim * self.out_seq_len,
+            config.emb_dim * self.num_particles_output,
             dtype=config.dtype,
             kernel_init=config.kernel_init,
             bias_init=config.bias_init,
         )(inputs)
-        return output.reshape([inputs.shape[0], self.out_seq_len, config.emb_dim])
+        return output.reshape([inputs.shape[0], self.num_particles_output, config.emb_dim])
 
 
 class FeedForward(nn.Module):
@@ -90,7 +89,7 @@ class FeedForward(nn.Module):
     config: DefaultConfig
 
     @nn.compact
-    def __call__(self, inputs):
+    def __call__(self, inputs, deterministic=True, dropout_rng=None):
         config = self.config
         x = nn.Dense(
             config.mlp_dim,
@@ -98,16 +97,13 @@ class FeedForward(nn.Module):
             kernel_init=config.kernel_init,
             bias_init=config.bias_init,
         )(inputs)
-        x = nn.relu(x)
-        output = (
-            nn.Dense(
-                inputs.shape[-1],
-                dtype=config.dtype,
-                kernel_init=config.kernel_init,
-                bias_init=config.bias_init,
-            )(x)
-            + inputs
-        )
+        x = nn.leaky_relu(x)
+        output = nn.Dense(
+            inputs.shape[-1],
+            dtype=config.dtype,
+            kernel_init=config.kernel_init,
+            bias_init=config.bias_init,
+        )(x)
         return output
 
 
@@ -126,21 +122,25 @@ class EncoderBlock(nn.Module):
 
         config = self.config
         scale_weights = self.scale_weights
+        
+        # Pre-Norm
+        x_norm = nn.LayerNorm(dtype=config.dtype)(inputs)
+        
+        attn_rng, ff_rng = random.split(dropout_rng) if dropout_rng is not None else (None, None)
+
         # Attention block.
-
-        x = (
-            WeightedMultiheadAttention(config, scale_weights)(
-                x=inputs,
-                weights=weights,
-                deterministic=deterministic,
-                dropout_rng=dropout_rng,
-            )
-            + inputs
+        x_attn = WeightedMultiheadAttention(config, scale_weights)(
+            x=x_norm,
+            weights=weights,
+            deterministic=deterministic,
+            dropout_rng=attn_rng,
         )
+        
+        x = inputs + x_attn
 
-        x = nn.LayerNorm(dtype=config.dtype)(x)
-        x = FeedForward(config=config)(x)
-        output = nn.LayerNorm(dtype=config.dtype)(x)
+        x_norm = nn.LayerNorm(dtype=config.dtype)(x)
+        x_ff = FeedForward(config=config)(x_norm, deterministic=deterministic, dropout_rng=ff_rng)
+        output = x + x_ff
         return output
 
 
@@ -157,18 +157,22 @@ class DecoderBlock(nn.Module):
     def __call__(self, inputs, deterministic, dropout_rng):
         config = self.config
 
+        # Pre-Norm
+        x_norm = nn.LayerNorm(dtype=config.dtype)(inputs)
+        
+        attn_rng, ff_rng = random.split(dropout_rng) if dropout_rng is not None else (None, None)
+
         # Attention block.
-        x = (
-            WeightedMultiheadAttention(config)(
-                x=inputs, deterministic=deterministic, dropout_rng=dropout_rng
-            )
-            + inputs
+        x_attn = WeightedMultiheadAttention(config)(
+            x=x_norm, deterministic=deterministic, dropout_rng=attn_rng
         )
+        
+        x = inputs + x_attn
 
         # x = nn.Dropout(rate=config.attention_dropout_rate)(x, deterministic=deterministic)
-        x = nn.LayerNorm(dtype=config.dtype)(x)
-        x = FeedForward(config=config)(x)
-        output = nn.LayerNorm(dtype=config.dtype)(x)
+        x_norm = nn.LayerNorm(dtype=config.dtype)(x)
+        x_ff = FeedForward(config=config)(x_norm, deterministic=deterministic, dropout_rng=ff_rng)
+        output = x + x_ff
         return output
 
 
@@ -192,6 +196,7 @@ class EncoderModel(nn.Module):
         x = Embedding(config)(x)
 
         for _ in range(config.num_layers):
+            key, dropout_rng = random.split(dropout_rng)
             x = EncoderBlock(config, scale_weights)(
                 inputs=x,
                 weights=weights,
@@ -215,7 +220,7 @@ class DecoderModel(nn.Module):
     """
 
     config: DefaultConfig
-    out_seq_len: int
+    num_particles_output: int
     imp_dim: int
 
     @nn.compact
@@ -224,9 +229,10 @@ class DecoderModel(nn.Module):
         config = self.config
 
         x = inputs  # .astype('int32')
-        x = Multiplyer(config, self.out_seq_len)(x)
+        x = Multiplyer(config, self.num_particles_output)(x)
 
         for _ in range(config.num_layers):
+            key, dropout_rng = random.split(dropout_rng)
             x = DecoderBlock(config)(
                 inputs=x, deterministic=deterministic, dropout_rng=dropout_rng
             )
@@ -245,7 +251,7 @@ class Transformer(nn.Module):
     """
 
     config: DefaultConfig
-    out_seq_len: int
+    num_particles_output: int
     inp_dim: int
     scale_weights: Optional[float] = 1
     scale_out: Optional[bool] = True
@@ -254,7 +260,7 @@ class Transformer(nn.Module):
 
     def setup(self):
         config = self.config
-        out_seq_len = self.out_seq_len
+        num_particles_output = self.num_particles_output
         inp_dim = self.inp_dim
         scale_weights = self.scale_weights
 
@@ -262,7 +268,7 @@ class Transformer(nn.Module):
             config, scale_weights
         )  # (inputs, weights, deterministic=deterministic)
         self.Decoder = DecoderModel(
-            config, out_seq_len, inp_dim
+            config, num_particles_output, inp_dim
         )  # (enc, deterministic=deterministic)
 
     def __call__(self, inputs, weights, deterministic=True, dropout_rng=random.key(0)):
@@ -285,13 +291,3 @@ class Transformer(nn.Module):
             dec = nn.sigmoid(dec) * (max_val - min_val) + min_val
         return (enc, dec)
 
-
-@struct.dataclass
-class Metrics(metrics.Collection):
-    enc_loss: metrics.Average
-    dec_loss: metrics.Average
-    enc_corr: metrics.Average
-
-
-class TrainState(train_state.TrainState):
-    metrics: Metrics

@@ -8,6 +8,7 @@ import numpy as np # type: ignore
 import optax # type: ignore
 import scipy.stats # type: ignore
 from flax import linen as nn # type: ignore
+from flax.training import train_state # type: ignore
 from jax import jit, random# type: ignore
 from tqdm import trange # type: ignore
 
@@ -15,9 +16,10 @@ from tqdm import trange # type: ignore
 import anndata # type: ignore
 import sklearn.neighbors # type: ignore
 import scipy.sparse # type: ignore
+import ott.geometry.costs # Added import
 
-from wassersteinwormhole._utils_Processing import get_max_dist_statistic
-from wassersteinwormhole._utils_Transformer import Metrics, TrainState, Transformer
+from wassersteinwormhole._utils_Processing import get_max_dist_statistic, get_max_dist_statistic_riemannian
+from wassersteinwormhole._utils_Transformer import Transformer
 from wassersteinwormhole.DefaultConfig import SpatialDefaultConfig
 import wassersteinwormhole.utils_OT as utils_OT
 
@@ -27,7 +29,7 @@ class SpatialWormhole:
     Initializes a memory-efficient Spatial Wormhole model with on-the-fly padding.
 
     This model pre-computes neighbor indices and assembles niche point clouds dynamically
-    during training, padding each batch to the largest niche size found in the dataset.
+    during training, padd ing each batch to the largest niche size found in the dataset.
     This makes it robust to variable neighborhood sizes.
 
     :param adata_train: (anndata.AnnData) An anndata object for training.
@@ -42,6 +44,8 @@ class SpatialWormhole:
         k_neighbours,
         adata_test=None,
         config=None,
+        dist_metric_enc=None,
+        dist_metric_dec=None,
         **kwargs,
     ):
         
@@ -94,19 +98,38 @@ class SpatialWormhole:
         self.dist_func_enc = config.dist_func_enc
         self.dist_func_dec = config.dist_func_dec
 
+        # Handle Riemannian Metrics
+        if self.dist_func_enc.endswith('_R'):
+            if dist_metric_enc is None:
+                self.dist_metric_enc = lambda x, y: ott.geometry.costs.Euclidean().all_pairs(x, y)
+            else:
+                self.dist_metric_enc = dist_metric_enc
+        else:
+            self.dist_metric_enc = None
+
+        if self.dist_func_dec.endswith('_R'):
+            if dist_metric_dec is None:
+                self.dist_metric_dec = lambda x, y: ott.geometry.costs.Euclidean().all_pairs(x, y)
+            else:
+                self.dist_metric_dec = dist_metric_dec
+        else:
+            self.dist_metric_dec = None
+
         if self.coeff_dec < 0:
             self.jit_dist_dec = jax.jit(jax.vmap(utils_OT.Zeros, (0, 0, None, None), 0), static_argnums=[2, 3])
             self.coeff_dec = 0.0
 
-        self.scale = config.scale
-        self.factor = config.factor
-        self._setup_scaling_function()
-        
         self.scale_ot = config.scale_ot
         if self.scale_ot:
             print("Calculating OT scale value from a sample of niches...")
             sample_pcs, sample_weights = self._assemble_and_pad_batch(np.random.choice(self.adata_train.shape[0], min(self.adata_train.shape[0], 1000), replace=False))
-            self.ot_scale_value = get_max_dist_statistic(sample_pcs, sample_weights, num_rand=100, reduction="max", dist_func_enc = self.dist_func_enc)
+            
+            if self.dist_func_enc.endswith('_R'):
+                self.ot_scale_value = get_max_dist_statistic_riemannian(
+                    sample_pcs, sample_weights, self.dist_metric_enc, num_rand=100, reduction="max"
+                )
+            else:
+                self.ot_scale_value = get_max_dist_statistic(sample_pcs, sample_weights, num_rand=100, reduction="max", dist_func_enc = self.dist_func_enc)
         else:
             self.ot_scale_value  = 1.0
         print("Using OT scale value of", "{:.2e}".format(self.ot_scale_value))
@@ -117,13 +140,19 @@ class SpatialWormhole:
             self.num_sinkhorn_iter = utils_OT.auto_find_num_iter(point_clouds=sample_pcs, 
                                                                  weights=sample_weights, eps=self.eps_enc, 
                                                                  lse_mode = self.lse_enc, ot_scale=self.ot_scale_value,
-                                                                 ot_func=self.dist_func_enc)
+                                                                 ot_func=self.dist_func_enc,
+                                                                 dist_metric=self.dist_metric_enc)
             print("Setting num_sinkhorn_iter to", self.num_sinkhorn_iter)
         else:
             print("Using num_sinkhorn_iter =", self.num_sinkhorn_iter)
         
-        self.jit_dist_enc = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), eps=self.eps_enc, lse_mode=self.lse_enc, num_iter=self.num_sinkhorn_iter, ot_scale=self.ot_scale_value), (0, 0), 0))
-        self.jit_dist_dec = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), eps=self.eps_dec, lse_mode=self.lse_dec, num_iter=self.num_sinkhorn_iter, ot_scale=self.ot_scale_value), (0, 0), 0))
+        kwargs_enc = {'eps': self.eps_enc, 'lse_mode': self.lse_enc, 'num_iter': self.num_sinkhorn_iter, 'ot_scale': self.ot_scale_value}
+        if self.dist_metric_enc: kwargs_enc['dist_metric'] = self.dist_metric_enc
+        self.jit_dist_enc = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), **kwargs_enc), (0, 0), 0))
+        
+        kwargs_dec = {'eps': self.eps_dec, 'lse_mode': self.lse_dec, 'num_iter': self.num_sinkhorn_iter, 'ot_scale': self.ot_scale_value}
+        if self.dist_metric_dec: kwargs_dec['dist_metric'] = self.dist_metric_dec
+        self.jit_dist_dec = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_dec), **kwargs_dec), (0, 0), 0))
 
         self.pc_max_val = self.exp_data_train.max()
         self.pc_min_val = self.exp_data_train.min()
@@ -199,14 +228,6 @@ class SpatialWormhole:
 
         return jnp.asarray(padded_pcs), jnp.asarray(padded_weights)
 
-    def _setup_scaling_function(self):
-        """Defines the scaling function based on the config."""
-        if self.scale == "min_max_total" or self.scale == "min_max_total_all_axis":
-            self.max_val = self.exp_data_train.max()
-            self.min_val = self.exp_data_train.min()
-            self.scale_func = lambda x: 2 * (x - self.min_val) / (self.max_val - self.min_val) - 1
-        else:
-            self.scale_func = lambda x: x
 
     def train(self, training_steps=10000, batch_size=16, verbose=8, init_lr=0.0001, decay_steps=2000, key=random.key(0)):
         """
@@ -235,7 +256,7 @@ class SpatialWormhole:
             point_clouds_batch, weights_batch = self._assemble_and_pad_batch(batch_cell_ind)
             
             # 3. Apply scaling
-            point_clouds_batch = self.scale_func(point_clouds_batch) * self.factor
+            point_clouds_batch = point_clouds_batch
             
             key, subkey = random.split(key)
             state, loss = self.train_step(state, point_clouds_batch, weights_batch, subkey)
@@ -294,7 +315,6 @@ class SpatialWormhole:
             pcs_batch, weights_batch = self._assemble_and_pad_batch(batch_cell_indices, is_test=from_test_set)
 
             # Scale and run encoder
-            pcs_batch = self.scale_func(pcs_batch) * self.factor
             enc = self.model.bind({"params": self.params}).Encoder(
                 pcs_batch, weights_batch, deterministic=True
             )
@@ -318,9 +338,9 @@ class SpatialWormhole:
         lr_sched = optax.exponential_decay(init_lr, decay_steps, 0.98, staircase=False)
         tx = optax.adam(lr_sched)
 
-        return TrainState.create(
-            apply_fn=self.model.apply, params=params, tx=tx, metrics=Metrics.empty()
-        )
+        return train_state.TrainState.create(apply_fn=self.model.apply, params=params, tx=tx)
+
+
 
     # ========================================================================
     # The following core JAX-based methods are unchanged

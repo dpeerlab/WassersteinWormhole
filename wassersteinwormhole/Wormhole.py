@@ -7,13 +7,14 @@ import numpy as np # type: ignore
 import optax # type: ignore
 import scipy.stats # type: ignore
 from flax import linen as nn # type: ignore
+from flax.training import train_state # type: ignore
 from jax import jit, random# type: ignore
 from tqdm import trange # type: ignore
+import ott.geometry.costs # Added import
 
 
-
-from wassersteinwormhole._utils_Processing import MaxMinScale, pad_pointclouds, get_max_dist_statistic
-from wassersteinwormhole._utils_Transformer import Metrics, TrainState, Transformer
+from wassersteinwormhole._utils_Processing import pad_pointclouds, get_max_dist_statistic, get_max_dist_statistic_riemannian
+from wassersteinwormhole._utils_Transformer import Transformer
 from wassersteinwormhole.DefaultConfig import DefaultConfig
 import wassersteinwormhole.utils_OT as utils_OT
 
@@ -30,6 +31,8 @@ class Wormhole:
     :param point_clouds_test: (list of np.array) list of test-set point clouds (default None)
     :param weights_test: (list of np.array)  list of per point weight for each test-set point cloud (default None, indicating uniform weights)
     :param config: (flax struct.dataclass) object with parameters for Wormhole such as OT metric choice, emedding dimention, etc. See docs for 'DefaultConfig.py' and tutorial details.
+    :param dist_metric_enc: (Callable) Distance metric function for Riemannian OT encoder loss (default None, uses squared Euclidean if _R metric selected)
+    :param dist_metric_dec: (Callable) Distance metric function for Riemannian OT decoder loss (default None, uses squared Euclidean if _R metric selected)
 
     :return: initialized Wormhole model
     """
@@ -41,6 +44,8 @@ class Wormhole:
         point_clouds_test=None,
         weights_test=None,
         config=None,
+        dist_metric_enc=None,
+        dist_metric_dec=None,
         **kwargs,
     ):
         
@@ -67,10 +72,14 @@ class Wormhole:
             self.weights = weights
 
         if point_clouds_test is None:
+            print("Processing train point clouds")
             self.point_clouds, self.weights = pad_pointclouds(
                 self.point_clouds, self.weights
             )
+            print("Train point clouds shape after padding:", self.point_clouds.shape)
         else:
+            
+            print("Processing train and test point clouds together to ensure consistent padding")
             self.point_clouds_test = point_clouds_test
 
             if weights_test is None:
@@ -84,27 +93,35 @@ class Wormhole:
                 list(self.point_clouds) + list(self.point_clouds_test),
                 list(self.weights) + list(self.weights_test),
             )
+            
+            # Store the original train set size before reassigning
+            num_train = len(list(self.point_clouds))
+            
+            print("Extracting train point clouds and weights after padding")
             self.point_clouds, self.weights = (
-                total_point_clouds[: len(list(self.point_clouds))],
-                total_weights[: len(list(self.point_clouds))],
+                total_point_clouds[: num_train],
+                total_weights[: num_train],
             )
-            self.point_clouds_test, self.weights_test = (
-                total_point_clouds[len(list(self.point_clouds)) :],
-                total_weights[len(list(self.point_clouds)) :],
-            )
+            print("Train point clouds shape after padding:", self.point_clouds.shape)
 
+            print("Extracting test point clouds and weights after padding")
+            self.point_clouds_test, self.weights_test = (
+                total_point_clouds[num_train :],
+                total_weights[num_train :],
+            )
+            print("Test point clouds shape after padding:", self.point_clouds_test.shape)
         self.scale_weights = np.exp(
             -jsp.special.xlogy(self.weights, self.weights).sum(axis=1)
         ).mean()
 
-        if(self.config.out_seq_len == -1):
-            self.out_seq_len = int(
+        if(self.config.num_particles_output == -1):
+            self.num_particles_output = int(
                 jnp.exp(-jsp.special.xlogy(self.weights, self.weights).sum(axis=1)).mean()
             )
         else:
-            self.out_seq_len = self.config.out_seq_len
+            self.num_particles_output = self.config.num_particles_output
 
-        print("Decoder generating point-clouds of size: ", self.out_seq_len)
+        print("Decoder generating point-clouds of size: ", self.num_particles_output)
         
         self.inp_dim = self.point_clouds.shape[-1]
 
@@ -121,6 +138,22 @@ class Wormhole:
         self.dist_func_enc = config.dist_func_enc
         self.dist_func_dec = config.dist_func_dec
 
+        # Handle Riemannian Metrics
+        if self.dist_func_enc.endswith('_R'):
+            if dist_metric_enc is None:
+                self.dist_metric_enc = lambda x, y: ott.geometry.costs.Euclidean().all_pairs(x, y)
+            else:
+                self.dist_metric_enc = dist_metric_enc
+        else:
+            self.dist_metric_enc = None
+
+        if self.dist_func_dec.endswith('_R'):
+            if dist_metric_dec is None:
+                self.dist_metric_dec = lambda x, y: ott.geometry.costs.Euclidean().all_pairs(x, y)
+            else:
+                self.dist_metric_dec = dist_metric_dec
+        else:
+            self.dist_metric_dec = None
 
 
         if self.coeff_dec < 0:
@@ -129,17 +162,14 @@ class Wormhole:
             )
             self.coeff_dec = 0.0
 
-        self.scale = config.scale
-        self.factor = config.factor
-        self.point_clouds = self.scale_func(self.point_clouds) * self.factor
-        if point_clouds_test is not None:
-            self.point_clouds_test = (
-                self.scale_func(self.point_clouds_test) * self.factor
-            )
-
         self.scale_ot = config.scale_ot
         if self.scale_ot:
-            self.ot_scale_value = get_max_dist_statistic(self.point_clouds, self.weights, num_rand=1000, reduction="max", dist_func_enc = self.dist_func_enc)
+            if self.dist_func_enc.endswith('_R'):
+                self.ot_scale_value = get_max_dist_statistic_riemannian(
+                    self.point_clouds, self.weights, self.dist_metric_enc, num_rand=100, reduction="max"
+                )
+            else:
+                self.ot_scale_value = get_max_dist_statistic(self.point_clouds, self.weights, num_rand=1000, reduction="max", dist_func_enc = self.dist_func_enc)
         else:
             self.ot_scale_value  = 1.0
 
@@ -151,23 +181,32 @@ class Wormhole:
             self.num_sinkhorn_iter = utils_OT.auto_find_num_iter(point_clouds = self.point_clouds, 
                                                                  weights = self.weights,
                                                                  eps = self.eps_enc, lse_mode = self.lse_enc, ot_scale = self.ot_scale_value,
-                                                                 ot_func = self.dist_func_enc)
+                                                                 ot_func = self.dist_func_enc,
+                                                                 dist_metric = self.dist_metric_enc)
             print("Setting num_sinkhorn_iter to", self.num_sinkhorn_iter)
         else:
             print("Using num_sinkhorn_iter =", self.num_sinkhorn_iter)
 
-        self.jit_dist_enc = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), 
-            eps = self.eps_enc, 
-            lse_mode = self.lse_enc, 
-            num_iter = self.num_sinkhorn_iter,
-            ot_scale = self.ot_scale_value),
+        kwargs_enc = {
+            'eps': self.eps_enc,
+            'lse_mode': self.lse_enc,
+            'num_iter': self.num_sinkhorn_iter,
+            'ot_scale': self.ot_scale_value
+        }
+        if self.dist_metric_enc: kwargs_enc['dist_metric'] = self.dist_metric_enc
+
+        self.jit_dist_enc = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), **kwargs_enc),
             (0, 0), 0))
 
-        self.jit_dist_dec = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_enc), 
-            eps = self.eps_dec, 
-            lse_mode = self.lse_dec, 
-            num_iter = self.num_sinkhorn_iter,
-            ot_scale = self.ot_scale_value),
+        kwargs_dec = {
+            'eps': self.eps_dec,
+            'lse_mode': self.lse_dec,
+            'num_iter': self.num_sinkhorn_iter,
+            'ot_scale': self.ot_scale_value
+        }
+        if self.dist_metric_dec: kwargs_dec['dist_metric'] = self.dist_metric_dec
+
+        self.jit_dist_dec = jax.jit(jax.vmap(partial(getattr(utils_OT, self.dist_func_dec), **kwargs_dec),
             (0, 0), 0))
 
 
@@ -177,7 +216,7 @@ class Wormhole:
 
         self.model = Transformer(
             self.config,
-            out_seq_len=self.out_seq_len,
+            num_particles_output=self.num_particles_output,
             inp_dim=self.inp_dim,
             scale_weights=self.scale_weights,
             scale_out=self.scale_out,
@@ -185,49 +224,8 @@ class Wormhole:
             max_val=self.pc_max_val,
         )
 
-    def scale_func(self, point_clouds):
-        """
-        :meta private:
-        """
-
-        if self.scale == "max_dist_total":
-            if not hasattr(self, "max_scale_num"):
-                max_dist = np.max(
-                    [np.max(scipy.spatial.distance.pdist(pc)) for pc in point_clouds]
-                )
-                self.max_scale_num = max_dist
-            else:
-                print("Using Calculated Max Dist Scaling Values")
-            return point_clouds / self.max_scale_num
-        if self.scale == "max_dist_each":
-            print("Using Per Sample Max Dist")
-            pc_scale = np.asarray(
-                [pc / np.max(scipy.spatial.distance.pdist(pc)) for pc in point_clouds]
-            )
-            return pc_scale
-        if self.scale == "min_max_each":
-            print("Scaling Per Sample")
-            max_val = point_clouds.max(axis=1, keepdims=True)
-            min_val = point_clouds.min(axis=1, keepdims=True)
-            return 2 * (point_clouds - min_val) / (max_val - min_val) - 1
-        elif self.scale == "min_max_total":
-            if not hasattr(self, "max_val"):
-                self.max_val = self.point_clouds.max(axis=((0, 1)), keepdims=True)
-                self.min_val = self.point_clouds.min(axis=((0, 1)), keepdims=True)
-            else:
-                print("Using Calculated Min Max Scaling Values")
-            return 2 * (point_clouds - self.min_val) / (self.max_val - self.min_val) - 1
-        elif self.scale == "min_max_total_all_axis":
-            if not hasattr(self, "max_val"):
-                self.max_val = self.point_clouds.max(keepdims=True)
-                self.min_val = self.point_clouds.min(keepdims=True)
-            else:
-                print("Using Calculated Min Max Scaling Values")
-            return 2 * (point_clouds - self.min_val) / (self.max_val - self.min_val) - 1
-        else:
-            return point_clouds
     
-    def encode(self, pc, weights, max_batch=256):
+    def encode(self, pc, weights = None, max_batch=256):
         """
         Encode point clouds with trained Wormhole model
 
@@ -238,6 +236,21 @@ class Wormhole:
 
         :return enc: per point cloud embeddings
         """
+
+        # if pc is a list of point clouds, pad and weights and convert to array
+
+        if isinstance(pc, list):
+            print("Processing list of point clouds for encoding")
+            if(weights is None):
+                print("No weights provided, using uniform weights for encoding")
+                weights = [np.ones(pc_i.shape[0]) / pc_i.shape[0] for pc_i in pc]
+            pc, weights = pad_pointclouds(pc, weights)
+        else:
+            print("Point clouds already in array format for encoding")
+            if(weights is None):
+                print("No weights provided, using uniform weights for encoding")    
+                weights = np.ones([pc.shape[0], pc.shape[1]]) / pc.shape[1]
+
 
         if pc.shape[0] < max_batch:
             enc = self.model.bind({"params": self.params}).Encoder(
@@ -359,13 +372,12 @@ class Wormhole:
             tx = optax.rmsprop(init_lr)
         else:
             lr_sched = optax.exponential_decay(
-                init_lr, decay_steps, 0.75, staircase=True
+                init_lr, decay_steps, 0.99, staircase=True
             )
-            tx = optax.rmsprop(lr_sched)  #
+            tx = optax.adam(lr_sched)  #
 
-        return TrainState.create(
-            apply_fn=self.model.apply, params=params, tx=tx, metrics=Metrics.empty()
-        )
+        return train_state.TrainState.create(apply_fn=self.model.apply, params=params, tx=tx)
+        
 
     @partial(jit, static_argnums=(0))
     def train_step(self, state, pc, weights, key=random.key(0)):
@@ -435,10 +447,27 @@ class Wormhole:
         return [single_batch, single_weights]
     
     def sample_single_batch(self, single_batch, single_weights, key, n_points):
-        indices = jax.random.choice(key, single_batch.shape[0], (n_points,), replace=False)
+        num_valid = jnp.sum(single_weights > 0)
+        
+        def sample_without_replacement(k):
+            p = single_weights / jnp.sum(single_weights)
+            return jax.random.choice(k, single_batch.shape[0], (n_points,), replace=False, p=p)
+            
+        def take_all_padded(k):
+            return jnp.argsort(single_weights > 0)[::-1][:n_points]
+
+        indices = jax.lax.cond(
+            num_valid >= n_points,
+            sample_without_replacement,
+            take_all_padded,
+            key
+        )
+        
         sampled_pc = jnp.take(single_batch, indices, axis=0)
         sample_weights = jnp.take(single_weights, indices, axis=0)
-        sample_weights = sample_weights / jnp.sum(sample_weights)
+        
+        total_weight = jnp.sum(sample_weights)
+        sample_weights = jnp.where(total_weight > 0, sample_weights / total_weight, sample_weights)
         
         return [sampled_pc, sample_weights]
     
@@ -476,7 +505,7 @@ class Wormhole:
 
         self.tri_u_ind = jnp.stack(jnp.triu_indices(batch_size, 1), axis=1)
         self.pseudo_weights = (
-            jnp.ones([batch_size, self.out_seq_len]) / self.out_seq_len
+            jnp.ones([batch_size, self.num_particles_output]) / self.num_particles_output
         )
 
         key, subkey = random.split(key)
