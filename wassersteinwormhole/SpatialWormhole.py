@@ -191,7 +191,7 @@ class SpatialWormhole:
         self.scale_out = True
 
         self.model = Transformer(
-            self.config, out_seq_len=self.out_seq_len, inp_dim=self.inp_dim,
+            self.config, num_particles_output=self.num_particles_output, inp_dim=self.inp_dim,
             scale_weights=self.scale_weights, scale_out=self.scale_out,
             min_val=self.pc_min_val, max_val=self.pc_max_val,
         )
